@@ -1,0 +1,35 @@
+{
+  "skill_name": "dp",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我用当前已打开的浏览器给 https://example.com 做一次全页截图，按 dp 规范归档保存。",
+      "expected_output": "触发 dp，先做 preflight，选择 ChromiumPage，生成并执行截图脚本，输出到 .dp/projects/<site>/output/YYYY-MM-DD/screenshot_full_*.png。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "抓取这个列表页里每个条目的标题和链接，保存成 JSON，不要新开浏览器。",
+      "expected_output": "触发 dp，选择 ChromiumPage 或在充分理由下选择更轻模式，生成抓取脚本，按 data_*.json 命名保存结果。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "我已经在浏览器里登录了网站，帮我复用当前浏览器状态抓取订单接口返回，尽量不要继续走页面点击。",
+      "expected_output": "触发 dp，优先选择 WebPage，连接已有浏览器，同步 cookies 后走 requests/session 模式获取数据。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "打开登录页，输入账号密码并提交；输入和点击都尽量走原生交互，不要手写 DOM 事件。",
+      "expected_output": "触发 dp，选择 ChromiumPage，生成遵守 native_input/native_click 约束的登录脚本；仅在凭据缺失时向用户追问。",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "把这个表单按字段列表填完并提交，提交后告诉我当前页面标题和 URL。",
+      "expected_output": "触发 dp，选择 ChromiumPage，生成表单填写脚本，使用显式等待和原生输入/点击，完成后输出页面标题和 URL。",
+      "files": []
+    }
+  ]
+}

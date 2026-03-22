@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+
+# 虚拟环境
+.venv/
+venv/
+
+# 环境变量（防止凭据泄露）
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+
+# dp 工作区运行时产物
+.dp/
