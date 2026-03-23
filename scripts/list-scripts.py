@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 # 从脚本 docstring 中提取的字段列表（按顺序）
@@ -29,8 +30,8 @@ def extract_fields(path: Path) -> dict[str, str]:
                 prefix = f"{key}:"
                 if stripped.startswith(prefix):
                     val = stripped[len(prefix):].strip()
-                    # 过滤掉注释行（# 开头的说明）
-                    val = val.split("#")[0].strip()
+                    # 只有 # 前有空白时才视为行内注释，避免截断 URL 中的 # (如 /#/page)
+                    val = re.sub(r'\s+#.*$', '', val).strip()
                     if val:
                         fields[key] = val
                     break

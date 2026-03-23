@@ -11,22 +11,24 @@ def workspace_root() -> Path:
 def site_run_dir(site: str, script_name: str) -> Path:
     """
     创建并返回本次执行的输出目录。
-    路径：.dp/projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS/
+    路径：.dp/projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS_mmm/
 
     一个目录对应一次执行，单文件或多文件输出结构一致。
     在目录下直接用语义文件名，如 run / "data.json"、run / "screenshot.png"。
+    时间戳精确到毫秒，避免同秒重试时落到同一目录。
 
     例：site_run_dir("hn", "scrape-top")
-        → .dp/projects/hn/output/scrape-top/2026-03-18_142300/
+        → .dp/projects/hn/output/scrape-top/2026-03-18_142300_123/
     """
     now = datetime.now()
+    ts = now.strftime("%Y-%m-%d_%H%M%S") + f"_{now.microsecond // 1000:03d}"
     path = (
         workspace_root()
         / "projects"
         / site
         / "output"
         / script_name
-        / now.strftime("%Y-%m-%d_%H%M%S")
+        / ts
     )
     path.mkdir(parents=True, exist_ok=True)
     return path

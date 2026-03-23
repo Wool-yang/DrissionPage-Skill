@@ -74,8 +74,8 @@ def mark_script_status(status: str = "ok") -> None:
     try:
         text = script.read_text(encoding="utf-8")
         today = date.today().isoformat()
-        text = re.sub(r'(last_run:\s*)\S*', f'\\g<1>{today}', text)
-        text = re.sub(r'(status:\s*)\S*', f'\\g<1>{status}', text)
+        text = re.sub(r'last_run:[ \t]*\S*', f'last_run: {today}', text)
+        text = re.sub(r'status:[ \t]*\S*', f'status: {status}', text)
         script.write_text(text, encoding="utf-8")
     except Exception:
         pass  # 回写失败不影响主流程
