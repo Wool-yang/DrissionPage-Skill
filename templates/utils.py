@@ -62,6 +62,17 @@ def native_input(
     return ele
 
 
+def _rewrite_header_fields(text: str, status: str, today: str) -> str:
+    """只在脚本头 docstring 内替换 last_run/status 字段，防止误改正文。"""
+    m = re.search(r'(\'\'\'|""")(.*?)\1', text, re.DOTALL)
+    if not m:
+        return text
+    quotes, inner = m.group(1), m.group(2)
+    inner = re.sub(r'^(last_run:)[ \t]*\S*', f'\\g<1> {today}', inner, flags=re.MULTILINE)
+    inner = re.sub(r'^(status:)[ \t]*\S*', f'\\g<1> {status}', inner, flags=re.MULTILINE)
+    return text[:m.start()] + quotes + inner + quotes + text[m.end():]
+
+
 def mark_script_status(status: str = "ok") -> None:
     """
     回写调用脚本的 last_run 和 status 字段到脚本头 docstring。
@@ -73,9 +84,7 @@ def mark_script_status(status: str = "ok") -> None:
         return
     try:
         text = script.read_text(encoding="utf-8")
-        today = date.today().isoformat()
-        text = re.sub(r'last_run:[ \t]*\S*', f'last_run: {today}', text)
-        text = re.sub(r'status:[ \t]*\S*', f'status: {status}', text)
+        text = _rewrite_header_fields(text, status, date.today().isoformat())
         script.write_text(text, encoding="utf-8")
     except Exception:
         pass  # 回写失败不影响主流程

@@ -82,7 +82,7 @@ metadata:
 ### 7. 归档与沉淀
 
 - 输出使用 `site_run_dir(site, script_name)` 获取本次执行目录，路径格式为：
-  `.dp/projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS/`
+  `.dp/projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS_mmm/`
 - 一个目录对应一次执行，目录内文件用语义名称（`data.json`、`screenshot.png` 等）
 - 临时测试输出保存到 `.dp/tmp/_out/`
 - 只在以下情况向用户追问：账号密码、高风险动作（支付 / 发帖 / 删除）、确实无法推断的多义任务
