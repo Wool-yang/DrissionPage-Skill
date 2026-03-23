@@ -233,7 +233,8 @@ def _write_workspace_docs() -> None:
             "| `lib/` | 共用库（connect / output / utils） |\n"
             "| `projects/<site>/` | 按网站存放脚本和输出 |\n"
             "| `tmp/` | 临时区（gitignore: *） |\n\n"
-            "输出命名：`projects/<site>/output/YYYY-MM-DD/<type>_HHMMSS[_desc].<ext>`\n",
+            "输出结构：`projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS/`\n"
+            "每个目录对应一次执行，目录内文件用语义名称（data.json、screenshot.png 等）。\n",
             encoding="utf-8",
         )
 

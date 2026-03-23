@@ -1,7 +1,7 @@
 # Workflow 代码模板
 
 每种 workflow 都包含完整的独立脚本（含连接逻辑），可直接写入 `.dp/tmp/_run.py` 执行。
-本文件里的“通用脚本头”是 canonical 骨架。客户端消费这个 source bundle 时，应直接复用它，而不是自行改写 helper 的导入与路径策略。
+本文件里的"通用脚本头"是 canonical 骨架。客户端消费这个 source bundle 时，应直接复用它，而不是自行改写 helper 的导入与路径策略。
 
 ---
 
@@ -21,8 +21,14 @@
 """
 site: <site-name>
 task: <一句话描述>
+intent: <短标签，1-3 词，如 scrape-orders / login-sso / screenshot-full>
+         # 推荐参考词：screenshot, scrape, login, form；新场景自然扩展，不强制枚举
+url: <目标 URL 或路径前缀，可选>
+tags: <逗号分隔关键词，可选>
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
+last_run:
+status:
 usage: python scripts/<name>.py [--port 9222]
 """
 import sys
@@ -40,7 +46,8 @@ def _load_dp_lib(start: Path) -> None:
 
 _load_dp_lib(Path(__file__))
 from connect import connect_browser, parse_port
-from utils import native_click, native_input, screenshot, save_json
+from output import site_run_dir
+from utils import native_click, native_input, screenshot, save_json, mark_script_status
 
 page = connect_browser(parse_port())
 ```
@@ -53,23 +60,28 @@ page = connect_browser(parse_port())
 
 ```python
 # ── 接通用脚本头 ──
-from output import site_output
 
 # 配置
 SITE = "site-name"          # 替换为实际 site-name
 FULL_PAGE = True            # False = 仅可视区域
 
 # 执行
-page.wait.doc_loaded()
-out = site_output(SITE, "screenshot_full" if FULL_PAGE else "screenshot", ext="png")
-page.get_screenshot(path=str(out.parent), name=out.name, full_page=FULL_PAGE)
-print(f"[dp] 截图 → {out}")
+try:
+    run = site_run_dir(SITE, "screenshot")
+    page.wait.doc_loaded()
+    out = run / "full.png"
+    page.get_screenshot(path=str(run), name=out.name, full_page=FULL_PAGE)
+    print(f"[dp] 截图 → {out}")
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
 ```
 
 **变体**：
-- 截取特定元素：`ele.get_screenshot(path=..., name=...)`
-- 截取指定区域：`page.get_screenshot(left_top=(x1,y1), right_bottom=(x2,y2), ...)`
-- 保存为 PDF：`page.save(path=..., name=..., as_pdf=True)`
+- 截取特定元素：`ele.get_screenshot(path=str(run), name="element.png")`
+- 截取指定区域：`page.get_screenshot(left_top=(x1,y1), right_bottom=(x2,y2), path=str(run), name="region.png")`
+- 保存为 PDF：`page.save(path=str(run), name="page.pdf", as_pdf=True)`
 
 ---
 
@@ -79,28 +91,31 @@ print(f"[dp] 截图 → {out}")
 
 ```python
 # ── 接通用脚本头 ──
-from output import site_output
 
 # 配置
 SITE = "site-name"          # 替换为实际 site-name
 URL = "https://..."         # 目标 URL（如果需要导航）
 SELECTOR = "css:selector"   # 元素选择器，替换为实际值
-DESC = "items"              # 输出文件描述
 
 # 执行
-# page.get(URL)  # 如需导航，取消注释
-page.wait.doc_loaded()
+try:
+    run = site_run_dir(SITE, "scrape")
+    # page.get(URL)  # 如需导航，取消注释
+    page.wait.doc_loaded()
 
-results = []
-for ele in page.eles(SELECTOR):
-    results.append({
-        "text": ele.text,
-        "href": ele.attr("href"),
-        # 按需添加其他字段
-    })
+    results = []
+    for ele in page.eles(SELECTOR):
+        results.append({
+            "text": ele.text,
+            "href": ele.attr("href"),
+            # 按需添加其他字段
+        })
 
-out = site_output(SITE, "data", DESC, ext="json")
-save_json(results, out)
+    save_json(results, run / "data.json")
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
 ```
 
 **常用选择器参考**：
@@ -130,19 +145,28 @@ USERNAME = "your_username"     # 建议从环境变量读取
 PASSWORD = "your_password"     # 建议从环境变量读取
 
 # 执行
-page.get(LOGIN_URL)
-page.wait.doc_loaded()
-
-native_input(page.ele(USERNAME_SEL), USERNAME)
-native_input(page.ele(PASSWORD_SEL), PASSWORD)
-native_click(page.ele(SUBMIT_SEL))
-
-# 等待登录成功（URL 发生变化）
 try:
-    page.wait.url_change(LOGIN_URL, exclude=True, timeout=15)
-    print(f"[dp] 登录成功 → {page.url}")
+    run = site_run_dir(SITE, "login")
+    page.get(LOGIN_URL)
+    page.wait.doc_loaded()
+
+    native_input(page.ele(USERNAME_SEL), USERNAME)
+    native_input(page.ele(PASSWORD_SEL), PASSWORD)
+    native_click(page.ele(SUBMIT_SEL))
+
+    # 等待登录成功（URL 发生变化）
+    try:
+        page.wait.url_change(LOGIN_URL, exclude=True, timeout=15)
+        print(f"[dp] 登录成功 → {page.url}")
+        screenshot(page, run / "result.png")
+    except Exception:
+        print(f"[dp] 登录超时，当前页面：{page.title}")
+        screenshot(page, run / "timeout.png")
+
+    mark_script_status("ok")
 except Exception:
-    print(f"[dp] 登录超时，当前页面：{page.title}")
+    mark_script_status("broken")
+    raise
 ```
 
 **安全建议**：账号密码建议通过环境变量传入，不硬编码在脚本中：
@@ -172,15 +196,22 @@ FIELDS = [
 SUBMIT_SEL = "@type=submit"
 
 # 执行
-page.wait.doc_loaded()
+try:
+    run = site_run_dir(SITE, "form")
+    page.wait.doc_loaded()
 
-for selector, value in FIELDS:
-    ele = page.ele(selector)
-    native_input(ele, value)
+    for selector, value in FIELDS:
+        ele = page.ele(selector)
+        native_input(ele, value)
 
-native_click(page.ele(SUBMIT_SEL))
-page.wait.doc_loaded()
-print(f"[dp] 表单已提交 → {page.title} ({page.url})")
+    native_click(page.ele(SUBMIT_SEL))
+    page.wait.doc_loaded()
+    print(f"[dp] 表单已提交 → {page.title} ({page.url})")
+    screenshot(page, run / "result.png")
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
 ```
 
 **表单特殊控件**：

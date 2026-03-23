@@ -12,6 +12,7 @@
 ## Notes
 
 ## Last Updated
+## Last Verified
 ```
 
 ## Scripts 条目规则
@@ -26,7 +27,7 @@
 推荐格式：
 
 ```md
-- `scripts/login.py` - 登录并进入报表页；适用于需要复用登录态的场景；updated: 2026-03-20
+- `scripts/login.py` - 登录并进入报表页；适用于需要复用登录态的场景；updated: 2026-03-20；verified: 2026-03-20 ok
 ```
 
 ## 可选扩展（按需披露）
@@ -42,5 +43,6 @@
 
 - 新增已沉淀脚本 -> 加条目
 - 修改已沉淀脚本 -> 更新条目和 `Last Updated`
+- 脚本成功运行后，`status: ok` 会自动回写到脚本头，同步更新条目的 `verified` 字段和 `Last Verified`
 - 删除已沉淀脚本 -> 删除条目
 - 临时脚本 -> 不写入 README

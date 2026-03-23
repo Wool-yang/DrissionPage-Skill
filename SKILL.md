@@ -65,6 +65,11 @@ metadata:
 
 - 先用 bundled `scripts/list-scripts.py` 枚举已有 workflow
 - 若客户端运行时 cwd 不在目标项目树内，应显式传入项目根路径：`scripts/list-scripts.py --root <project-root>`
+- 读取 index 后，按以下优先级判断是否有可复用脚本：
+  1. **site + intent** 精确匹配（最强信号）
+  2. **url** 前缀匹配（同站点同路径，区分子场景）
+  3. **task** 语义判断（最后兜底）
+- `status: broken` 的脚本优先修复再复用，而非新建
 - 找到匹配脚本时，优先读取并静默复用；只有复杂修改才额外询问
 - 找不到匹配脚本时，才从 `references/workflows.md` 选模板生成
 
@@ -76,10 +81,13 @@ metadata:
 
 ### 7. 归档与沉淀
 
-- 输出默认保存到 `.dp/projects/<site>/output/YYYY-MM-DD/<type>_HHMMSS[_desc].<ext>`
+- 输出使用 `site_run_dir(site, script_name)` 获取本次执行目录，路径格式为：
+  `.dp/projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS/`
+- 一个目录对应一次执行，目录内文件用语义名称（`data.json`、`screenshot.png` 等）
 - 临时测试输出保存到 `.dp/tmp/_out/`
 - 只在以下情况向用户追问：账号密码、高风险动作（支付 / 发帖 / 删除）、确实无法推断的多义任务
 - 如果任务完成后明显值得复用，将脚本沉淀到 `.dp/projects/<site>/scripts/<name>.py`
+- 沉淀脚本应在末尾用 `mark_script_status("ok")` 回写运行状态，并在 except 中回写 `"broken"`
 
 ## 站点 README 规则
 

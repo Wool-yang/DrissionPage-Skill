@@ -1,5 +1,8 @@
 """通用操作封装——截图、数据保存、等待、原生交互等高频操作。"""
 import json
+import re
+import sys
+from datetime import date
 from pathlib import Path
 from DrissionPage import ChromiumPage
 from DrissionPage._elements.chromium_element import ChromiumElement
@@ -57,3 +60,22 @@ def native_input(
         ele.clear(by_js=False)
     ele.input(value, clear=False, by_js=False)
     return ele
+
+
+def mark_script_status(status: str = "ok") -> None:
+    """
+    回写调用脚本的 last_run 和 status 字段到脚本头 docstring。
+    在脚本末尾调用：mark_script_status("ok") 或 mark_script_status("broken")。
+    不依赖 git，直接改文件——在无版本控制的 .dp/ 目录下也能持久化状态。
+    """
+    script = Path(sys.argv[0]).resolve()
+    if not script.exists() or script.suffix != ".py":
+        return
+    try:
+        text = script.read_text(encoding="utf-8")
+        today = date.today().isoformat()
+        text = re.sub(r'(last_run:\s*)\S*', f'\\g<1>{today}', text)
+        text = re.sub(r'(status:\s*)\S*', f'\\g<1>{status}', text)
+        script.write_text(text, encoding="utf-8")
+    except Exception:
+        pass  # 回写失败不影响主流程

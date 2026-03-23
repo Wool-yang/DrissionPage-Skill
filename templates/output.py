@@ -1,4 +1,4 @@
-"""统一输出路径管理——确保每次输出都有规范的文件名和目录结构。"""
+"""统一输出路径管理——每次执行对应一个带时间戳的 run 目录。"""
 from datetime import datetime
 from pathlib import Path
 
@@ -8,18 +8,27 @@ def workspace_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def site_output(site: str, type_: str, desc: str = "", ext: str = "png") -> Path:
+def site_run_dir(site: str, script_name: str) -> Path:
     """
-    返回归档输出路径：.dp/projects/<site>/output/YYYY-MM-DD/<type>_HHMMSS[_desc].<ext>
+    创建并返回本次执行的输出目录。
+    路径：.dp/projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS/
 
-    例：site_output("hn", "screenshot", "full") -> .dp/projects/hn/output/2026-03-18/screenshot_142300_full.png
+    一个目录对应一次执行，单文件或多文件输出结构一致。
+    在目录下直接用语义文件名，如 run / "data.json"、run / "screenshot.png"。
+
+    例：site_run_dir("hn", "scrape-top")
+        → .dp/projects/hn/output/scrape-top/2026-03-18_142300/
     """
     now = datetime.now()
-    name = f"{type_}_{now.strftime('%H%M%S')}"
-    if desc:
-        name += f"_{desc}"
-    path = workspace_root() / "projects" / site / "output" / now.strftime("%Y-%m-%d") / f"{name}.{ext}"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = (
+        workspace_root()
+        / "projects"
+        / site
+        / "output"
+        / script_name
+        / now.strftime("%Y-%m-%d_%H%M%S")
+    )
+    path.mkdir(parents=True, exist_ok=True)
     return path
 
 
