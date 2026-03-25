@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-_rewrite_header_fields / mark_script_status / extract_fields 最小回归测试。
+_rewrite_header_fields / mark_script_status / extract_fields / doctor.check 最小回归测试。
 无第三方依赖，直接调真实实现。退出码 0=全过，1=有失败。
 """
 from __future__ import annotations
@@ -22,6 +22,13 @@ _ls_spec = importlib.util.spec_from_file_location(
 _ls_mod = importlib.util.module_from_spec(_ls_spec)
 _ls_spec.loader.exec_module(_ls_mod)
 extract_fields = _ls_mod.extract_fields
+
+# doctor.py 用 importlib 加载（便于 patch 模块级全局变量）
+_doc_spec = importlib.util.spec_from_file_location(
+    "doctor", Path(__file__).parent / "doctor.py"
+)
+_doctor = importlib.util.module_from_spec(_doc_spec)
+_doc_spec.loader.exec_module(_doctor)
 
 # ── 测试框架 ──────────────────────────────────────────────────────────────────
 
@@ -304,6 +311,106 @@ def test_extract_multiline_body_not_polluted() -> None:
         p.unlink(missing_ok=True)
 
 
+# ── doctor.check() 行为测试 ───────────────────────────────────────────────────
+
+import json as _json  # noqa: E402（已在顶层有 json，这里显式别名避免歧义）
+
+
+def _patch_doctor(tmp: Path):
+    """返回 context manager，临时将 doctor 模块的工作区全局变量指向 tmp/.dp。"""
+    import contextlib
+
+    @contextlib.contextmanager
+    def ctx():
+        dp = tmp / ".dp"
+        dp.mkdir(parents=True, exist_ok=True)
+        saved = {k: getattr(_doctor, k) for k in ("WORKSPACE", "VENV", "LIB", "STATE")}
+        _doctor.WORKSPACE = dp
+        _doctor.VENV = dp / ".venv"
+        _doctor.LIB = dp / "lib"
+        _doctor.STATE = dp / "state.json"
+        try:
+            yield dp
+        finally:
+            for k, v in saved.items():
+                setattr(_doctor, k, v)
+
+    return ctx()
+
+
+def test_doctor_check_state_missing() -> None:
+    """state.json 不存在时 check() 返回可读 issue，不 traceback。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            issues = _doctor.check()
+            check("doctor: state.json 缺失被报告",
+                  any("state.json" in i for i in issues), str(issues))
+
+
+def test_doctor_check_version_mismatch() -> None:
+    """runtime_lib_version 不一致时 check() 返回 issue。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            dp.joinpath("state.json").write_text(
+                _json.dumps({"bundle_version": "old", "runtime_lib_version": "0.0.0"}),
+                encoding="utf-8",
+            )
+            issues = _doctor.check()
+            check("doctor: 版本不一致被报告",
+                  any("不一致" in i for i in issues), str(issues))
+
+
+def test_doctor_check_state_corrupted() -> None:
+    """state.json 损坏时 check() 返回 issue，不 traceback。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            dp.joinpath("state.json").write_text("{ not valid json <<<", encoding="utf-8")
+            try:
+                issues = _doctor.check()
+                check("doctor: state.json 损坏被报告",
+                      any("损坏" in i or "state.json" in i for i in issues), str(issues))
+            except Exception as e:
+                check("doctor: state.json 损坏不应 traceback", False, str(e))
+
+
+def test_doctor_check_python_not_executable() -> None:
+    """venv Python 存在但不可执行时 check() 返回 issue，不 traceback。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            # 创建 Scripts/python.exe（Windows 路径）和 bin/python，写入垃圾内容
+            for sub in (("Scripts", "python.exe"), ("bin", "python")):
+                fake = dp / ".venv" / sub[0] / sub[1]
+                fake.parent.mkdir(parents=True, exist_ok=True)
+                fake.write_bytes(b"\x7fELF\x00\x00garbage")  # 非法可执行文件
+            try:
+                issues = _doctor.check()
+                check("doctor: Python 不可执行被报告",
+                      any("不可执行" in i or "检测失败" in i or "DrissionPage" in i
+                          for i in issues),
+                      str(issues))
+            except Exception as e:
+                check("doctor: Python 不可执行不应 traceback", False, str(e))
+
+
+def test_doctor_write_state_fields() -> None:
+    """_write_state() 写入 runtime_lib_version 字段，不写旧的 lib_version。"""
+    with tempfile.TemporaryDirectory() as d:
+        state_path = Path(d) / "state.json"
+        orig_state = _doctor.STATE
+        _doctor.STATE = state_path
+        try:
+            _doctor._write_state("2026-03-20.1", "2026-03-25.1")
+            state = _json.loads(state_path.read_text(encoding="utf-8"))
+            check("doctor: state.json 含 runtime_lib_version",
+                  state.get("runtime_lib_version") == "2026-03-25.1", str(state))
+            check("doctor: state.json 含 bundle_version",
+                  state.get("bundle_version") == "2026-03-20.1", str(state))
+            check("doctor: state.json 不含旧 lib_version",
+                  "lib_version" not in state, str(state))
+        finally:
+            _doctor.STATE = orig_state
+
+
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -324,6 +431,13 @@ def main() -> int:
     test_extract_shebang()
     test_extract_single_quote_docstring()
     test_extract_multiline_body_not_polluted()
+
+    print("\n── doctor.check() ──")
+    test_doctor_check_state_missing()
+    test_doctor_check_version_mismatch()
+    test_doctor_check_state_corrupted()
+    test_doctor_check_python_not_executable()
+    test_doctor_write_state_fields()
 
     print()
     if _failed:

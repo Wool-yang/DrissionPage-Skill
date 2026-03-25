@@ -47,6 +47,18 @@ def _read_bundle_version() -> str:
     return "unknown"
 
 
+def _read_runtime_lib_version() -> str:
+    """从 SKILL.md 读取 runtime-lib-version，缺失时回退到 bundle-version。"""
+    try:
+        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        m = re.search(r'runtime-lib-version:\s*["\']?([^"\'\s\n]+)["\']?', text)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return _read_bundle_version()
+
+
 def _read_state() -> dict:
     """读取 .dp/state.json，失败返回空字典。"""
     try:
@@ -55,13 +67,13 @@ def _read_state() -> dict:
         return {}
 
 
-def _write_state(bundle_version: str) -> None:
+def _write_state(bundle_version: str, runtime_lib_version: str) -> None:
     """写入 .dp/state.json，记录版本和最后初始化时间。"""
     from datetime import datetime, timezone
     STATE.write_text(
         json.dumps({
             "bundle_version": bundle_version,
-            "lib_version": bundle_version,
+            "runtime_lib_version": runtime_lib_version,
             "last_doctor_ok_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         }, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -198,24 +210,38 @@ def check() -> list[str]:
     if not py.exists():
         issues.append(".dp/.venv/ 虚拟环境不存在或已损坏")
     else:
-        result = subprocess.run(
-            [str(py), "-c", "import DrissionPage"],
-            capture_output=True, timeout=10,
-        )
-        if result.returncode != 0:
-            issues.append("DrissionPage 未安装到 .dp/.venv/")
+        try:
+            result = subprocess.run(
+                [str(py), "-c", "import DrissionPage"],
+                capture_output=True, timeout=10,
+            )
+            if result.returncode != 0:
+                issues.append("DrissionPage 未安装到 .dp/.venv/")
+        except (OSError, PermissionError):
+            issues.append(".dp/.venv/ Python 不可执行（权限问题或文件损坏）")
+        except Exception as e:
+            issues.append(f".dp/.venv/ 检测失败：{e}")
 
     for name in ("connect.py", "output.py", "utils.py"):
         if not (LIB / name).exists():
             issues.append(f".dp/lib/{name} 缺失")
 
-    bundle_v = _read_bundle_version()
-    state = _read_state()
+    runtime_v = _read_runtime_lib_version()
     if not STATE.exists():
         issues.append(".dp/state.json 不存在（工作区需要重新初始化）")
-    elif state.get("lib_version") != bundle_v:
-        lib_v = state.get("lib_version", "未知")
-        issues.append(f".dp/lib 版本 {lib_v!r} 与 bundle {bundle_v!r} 不一致，需要升级")
+    else:
+        try:
+            state = json.loads(STATE.read_text(encoding="utf-8"))
+            # 兼容旧 lib_version 字段
+            state_v = state.get("runtime_lib_version") or state.get("lib_version")
+            if state_v is None:
+                issues.append(".dp/state.json 缺少版本信息，需要重新初始化")
+            elif state_v != runtime_v:
+                issues.append(
+                    f".dp/lib runtime 版本 {state_v!r} 与当前 {runtime_v!r} 不一致，需要升级"
+                )
+        except Exception:
+            issues.append(".dp/state.json 损坏，无法解析，需要重新初始化")
 
     return issues
 
@@ -266,11 +292,12 @@ def init(force: bool = False) -> bool:
 
     # 6. 写入/更新持久状态
     bundle_v = _read_bundle_version()
-    _write_state(bundle_v)
+    runtime_v = _read_runtime_lib_version()
+    _write_state(bundle_v, runtime_v)
 
     print("[dp] ✓ 工作空间就绪：.dp/")
     print(f"[dp]   Python: {venv_python()}")
-    print(f"[dp]   bundle: {bundle_v}")
+    print(f"[dp]   bundle: {bundle_v} / runtime-lib: {runtime_v}")
     return True
 
 

@@ -84,6 +84,9 @@ def parse_frontmatter(skill_md: Path) -> dict[str, str]:
     if "bundle-version:" not in frontmatter:
         fail("metadata 中缺少 bundle-version")
 
+    if "runtime-lib-version:" not in frontmatter:
+        fail("metadata 中缺少 runtime-lib-version")
+
     return {"name": name}
 
 

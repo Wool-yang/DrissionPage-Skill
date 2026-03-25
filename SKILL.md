@@ -6,6 +6,7 @@ compatibility: >
   需要宿主客户端能够读取此 skill、运行本地 Python 与 shell 命令、读取 bundled scripts/references，并在目标工作区写文件。默认假设 Python 3.10+、可写文件系统、以及可连接本地 Chromium 远程调试端口的环境。
 metadata:
   bundle-version: "2026-03-20.1"
+  runtime-lib-version: "2026-03-25.1"
   bundle-type: "canonical-source"
 ---
 
@@ -29,7 +30,7 @@ metadata:
 
 **可以跳过 preflight 的条件**（满足以下全部）：
 - `.dp/state.json` 存在
-- `state.json` 中的 `bundle_version` 与当前 bundle 一致
+- `state.json` 中的 `runtime_lib_version` 与当前 skill 的 `runtime-lib-version` 一致
 
 **需要运行 preflight 的情况**：
 - `.dp/` 不存在、`.dp/.venv/` 缺失、`.dp/lib/` 缺失
