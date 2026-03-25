@@ -102,6 +102,18 @@ def _run_script(script: str, port: str, timeout: int = 60) -> bool:
 class _SilentHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *_): pass   # 屏蔽 access log
 
+    def do_GET(self):
+        if self.path == "/cookie-echo":
+            import json as _json
+            body = _json.dumps({"cookies": self.headers.get("Cookie", "")}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            super().do_GET()
+
 
 def _start_fixture_server(fixture_port: int) -> http.server.HTTPServer:
     server = http.server.ThreadingHTTPServer(
@@ -244,13 +256,28 @@ from utils import save_json, mark_script_status
 
 def _script_web_page_sync(base_url: str) -> str:
     return _lib_loader_web_page() + f'''\
+import json as _json
 try:
     run = site_run_dir("{SITE}", "web-page-sync")
-    page = connect_web_page(parse_port())   # 默认 d 模式（浏览器）
-    page.change_mode("s")                  # 切换到 session 模式，自动同步 cookies
+    page = connect_web_page(parse_port())   # d 模式（浏览器）
+
+    # 在 d 模式下导航到 fixture 域（建立 cookie 上下文）
     page.get("{base_url}/basic.html")
-    # session 模式下 page.html 是响应体文本
-    save_json({{"url": str(page.url), "html_length": len(page.html)}}, run / "data.json")
+    page.wait.doc_loaded()
+
+    # 在浏览器里种一个标记 cookie
+    page.run_js(\'document.cookie = "dp_smoke_cookie=sync_ok; path=/"\')
+
+    # 切换到 session 模式，DrissionPage 应同步浏览器 cookies
+    page.change_mode("s")
+
+    # 请求 cookie-echo 端点，验证 cookie 出现在 request 里
+    page.get("{base_url}/cookie-echo")
+    data = _json.loads(page.html)
+    cookies_str = data.get("cookies", "")
+    assert "dp_smoke_cookie=sync_ok" in cookies_str, f"cookie 同步失败：{{cookies_str!r}}"
+
+    save_json({{"synced": True, "cookies": cookies_str}}, run / "data.json")
     mark_script_status("ok")
 except Exception:
     mark_script_status("broken")
@@ -370,11 +397,11 @@ def _verify_web_page_sync() -> tuple[bool, str]:
         return False, "缺少 data.json"
     try:
         data = json.loads(data_file.read_text(encoding="utf-8"))
-        if "html_length" not in data or data["html_length"] == 0:
-            return False, f"data.json html_length 异常：{data}"
+        if not data.get("synced"):
+            return False, f"cookie 同步失败：{data}"
     except Exception as e:
         return False, f"data.json 无效 JSON：{e}"
-    return True, f"WebPage session OK → {data_file}"
+    return True, f"cookie 同步验证通过 → {data_file}"
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
