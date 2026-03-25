@@ -161,16 +161,20 @@ def create_venv(use_uv: bool) -> bool:
     try:
         if use_uv:
             print(f"[dp] uv venv（Python {ver_str}+）")
-            result = subprocess.run(
-                ["uv", "venv", str(VENV), "--python", ver_str],
-                timeout=60,
-            )
+            # 若 venv 目录已存在（损坏或不可用），传 --clear 让 uv 替换
+            uv_cmd = ["uv", "venv", str(VENV), "--python", ver_str]
+            if VENV.exists():
+                uv_cmd.append("--clear")
+            result = subprocess.run(uv_cmd, timeout=60)
         else:
             python_exe = find_python()
             if not python_exe:
                 print(f"[dp] 错误：未找到 Python {ver_str}+ 解释器", file=sys.stderr)
                 return False
             print(f"[dp] python -m venv（{python_exe}）")
+            # 损坏的 venv 目录需先删除再重建
+            if VENV.exists() and not venv_python().exists():
+                shutil.rmtree(VENV, ignore_errors=True)
             result = subprocess.run([python_exe, "-m", "venv", str(VENV)], timeout=60)
     except (OSError, PermissionError) as e:
         print(f"[dp] 错误：创建虚拟环境时工具不可执行：{e}", file=sys.stderr)
