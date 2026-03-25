@@ -225,6 +225,34 @@ except Exception:
 '''
 
 
+def _lib_loader_web_page() -> str:
+    """WebPage 专用 lib 加载（导入 connect_web_page 而非 connect_browser）。"""
+    return f'''\
+import sys
+from pathlib import Path
+sys.path.insert(0, r"{WORKSPACE / 'lib'}")
+from connect import connect_web_page, parse_port
+from output import site_run_dir
+from utils import save_json, mark_script_status
+'''
+
+
+def _script_web_page_sync(base_url: str) -> str:
+    return _lib_loader_web_page() + f'''\
+try:
+    run = site_run_dir("{SITE}", "web-page-sync")
+    page = connect_web_page(parse_port())   # 默认 d 模式（浏览器）
+    page.change_mode("s")                  # 切换到 session 模式，自动同步 cookies
+    page.get("{base_url}/basic.html")
+    # session 模式下 page.html 是响应体文本
+    save_json({{"url": str(page.url), "html_length": len(page.html)}}, run / "data.json")
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
+'''
+
+
 def _script_custom(base_url: str) -> str:
     return _lib_loader() + f'''\
 try:
@@ -328,9 +356,25 @@ def _verify_custom() -> tuple[bool, str]:
     return True, f"单一 run-dir，3 个输出文件 OK"
 
 
+def _verify_web_page_sync() -> tuple[bool, str]:
+    run = _latest_run_dir("web-page-sync")
+    if not run:
+        return False, "run-dir 不存在"
+    data_file = run / "data.json"
+    if not data_file.exists():
+        return False, "缺少 data.json"
+    try:
+        data = json.loads(data_file.read_text(encoding="utf-8"))
+        if "html_length" not in data or data["html_length"] == 0:
+            return False, f"data.json html_length 异常：{data}"
+    except Exception as e:
+        return False, f"data.json 无效 JSON：{e}"
+    return True, f"WebPage session OK → {data_file}"
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 
-ALL_CASES = ["screenshot", "scrape", "form", "upload", "download", "newtab", "custom"]
+ALL_CASES = ["screenshot", "scrape", "form", "upload", "download", "newtab", "web-page-sync", "custom"]
 
 
 def main() -> None:
@@ -351,11 +395,13 @@ def main() -> None:
         print("[dp smoke] 请先运行 start-chrome-cdp.bat（或等效脚本）启动带调试端口的 Chrome。", file=sys.stderr)
         sys.exit(2)
 
-    # 2. 清理上一轮 custom run-dir（避免 count != 1 误判）
+    # 2. 清理将要运行的 case 的历史产物，防止脚本失败时旧产物误报 PASS
     import shutil
-    custom_base = WORKSPACE / "projects" / SITE / "output" / "custom"
-    if custom_base.exists():
-        shutil.rmtree(custom_base)
+    cases_to_run = [args.case] if args.case else ALL_CASES
+    for case in cases_to_run:
+        case_dir = WORKSPACE / "projects" / SITE / "output" / case
+        if case_dir.exists():
+            shutil.rmtree(case_dir)
 
     # 3. 启动 fixture server
     base_url = f"http://127.0.0.1:{args.fixture_port}"
@@ -372,24 +418,25 @@ def main() -> None:
     upload_file = upload_tmp.name
 
     # 5. 运行 cases
-    cases_to_run = [args.case] if args.case else ALL_CASES
     scripts = {
-        "screenshot": lambda: _script_screenshot(base_url),
-        "scrape":     lambda: _script_scrape(base_url),
-        "form":       lambda: _script_form(base_url),
-        "upload":     lambda: _script_upload(base_url, upload_file),
-        "download":   lambda: _script_download(base_url),
-        "newtab":     lambda: _script_newtab(base_url),
-        "custom":     lambda: _script_custom(base_url),
+        "screenshot":   lambda: _script_screenshot(base_url),
+        "scrape":       lambda: _script_scrape(base_url),
+        "form":         lambda: _script_form(base_url),
+        "upload":       lambda: _script_upload(base_url, upload_file),
+        "download":     lambda: _script_download(base_url),
+        "newtab":       lambda: _script_newtab(base_url),
+        "web-page-sync": lambda: _script_web_page_sync(base_url),
+        "custom":       lambda: _script_custom(base_url),
     }
     verifiers = {
-        "screenshot": _verify_screenshot,
-        "scrape":     _verify_scrape,
-        "form":       _verify_form,
-        "upload":     lambda: _verify_upload(upload_file),
-        "download":   _verify_download,
-        "newtab":     _verify_newtab,
-        "custom":     _verify_custom,
+        "screenshot":   _verify_screenshot,
+        "scrape":       _verify_scrape,
+        "form":         _verify_form,
+        "upload":       lambda: _verify_upload(upload_file),
+        "download":     _verify_download,
+        "newtab":       _verify_newtab,
+        "web-page-sync": _verify_web_page_sync,
+        "custom":       _verify_custom,
     }
 
     results: list[tuple[str, bool, str]] = []

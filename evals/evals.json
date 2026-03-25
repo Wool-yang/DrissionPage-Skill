@@ -46,7 +46,7 @@
     {
       "id": 8,
       "prompt": "点击这个链接，它会在新标签页打开，然后截图新标签页内容。",
-      "expected_output": "触发 dp，选择 ChromiumPage，使用 click.for_new_tab() 或 wait.new_tab() 切换到新标签页，标签页切换不创建新 run dir，同一任务的所有输出归档到同一 run dir。截图保存到 .dp/projects/<site>/output/screenshot/<timestamp>/new-tab.png",
+      "expected_output": "触发 dp，选择 ChromiumPage，使用 click.for_new_tab() 或 wait.new_tab() 切换到新标签页，标签页切换不创建新 run dir，同一任务的所有输出归档到同一 run dir。输出路径：.dp/projects/<site>/output/newtab/<timestamp>/，文件名如 before.png、newtab.png。",
       "files": []
     },
     {

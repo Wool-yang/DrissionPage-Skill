@@ -58,7 +58,7 @@ metadata:
 从用户请求或上下文提取：
 
 - `site-name`：小写连字符格式，如 `hacker-news`
-- 意图：`screenshot` / `scrape` / `login` / `form` / `custom`
+- 意图：`screenshot` / `scrape` / `login` / `form` / `web-page-sync` / `custom`
 - 对象选择（见 `references/mode-selection.md`）：
   - 需要点击、截图、DOM、页面渲染 -> **ChromiumPage**（默认）
   - 已登录浏览器，需要同步 cookies 继续高效请求 -> **WebPage**
