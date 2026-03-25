@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>dp smoke — basic</title></head>
+<body>
+  <h1>dp smoke basic fixture</h1>
+  <ul id="items">
+    <li class="item"><a href="#item1">Item 1</a></li>
+    <li class="item"><a href="#item2">Item 2</a></li>
+    <li class="item"><a href="#item3">Item 3</a></li>
+  </ul>
+  <form id="test-form" onsubmit="document.getElementById('form-result').textContent='submitted: '+document.getElementById('name').value; return false;">
+    <input type="text" id="name" name="name" placeholder="your name" />
+    <input type="submit" id="submit-btn" value="Submit" />
+  </form>
+  <div id="form-result"></div>
+</body>
+</html>

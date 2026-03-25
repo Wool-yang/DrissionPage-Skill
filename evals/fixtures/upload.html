@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>dp smoke — upload</title></head>
+<body>
+  <h1>dp smoke upload fixture</h1>
+  <input type="file" id="file-input" />
+  <div id="upload-result"></div>
+  <script>
+    document.getElementById('file-input').addEventListener('change', function(e) {
+      if (e.target.files.length)
+        document.getElementById('upload-result').textContent = 'uploaded: ' + e.target.files[0].name;
+    });
+  </script>
+</body>
+</html>

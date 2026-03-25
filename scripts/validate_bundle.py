@@ -23,6 +23,7 @@ REQUIRED_FILES = [
     "SKILL.md",
     "scripts/doctor.py",
     "scripts/list-scripts.py",
+    "scripts/smoke.py",
     "scripts/validate_bundle.py",
     "scripts/test_helpers.py",
     "templates/connect.py",
@@ -34,6 +35,10 @@ REQUIRED_FILES = [
     "references/site-readme.md",
     "evals/evals.json",
     "evals/smoke-checklist.md",
+    "evals/fixtures/basic.html",
+    "evals/fixtures/upload.html",
+    "evals/fixtures/download.html",
+    "evals/fixtures/newtab.html",
 ]
 FORBIDDEN_TEXT_PATTERNS = [
     "CLAUDE_SKILL_DIR",
@@ -152,6 +157,7 @@ def validate_python(root: Path) -> None:
     for rel in (
         "scripts/doctor.py",
         "scripts/list-scripts.py",
+        "scripts/smoke.py",
         "scripts/validate_bundle.py",
         "templates/connect.py",
         "templates/output.py",
@@ -172,6 +178,8 @@ def validate_rule_markers(root: Path) -> None:
         fail("SKILL.md 缺少 list-scripts 显式根路径说明")
     if "runtime_lib_version" not in skill:
         fail("SKILL.md 缺少 runtime_lib_version preflight 描述")
+    if "当前会话工作区 cwd 作为工作区根" not in skill:
+        fail("SKILL.md 缺少工作区根 contract 说明")
 
 
 def validate_output_contract(root: Path) -> None:

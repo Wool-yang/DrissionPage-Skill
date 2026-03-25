@@ -322,7 +322,87 @@ def test_extract_multiline_body_not_polluted() -> None:
         p.unlink(missing_ok=True)
 
 
-# ── doctor.check() 行为测试 ───────────────────────────────────────────────────
+# ── list-scripts.py --url / --status 过滤测试 ─────────────────────────────────
+
+import io
+import unittest.mock as _mock
+
+
+def _make_site_scripts(tmp: Path, scripts: list[dict]) -> Path:
+    """在 tmp/.dp/projects/<site>/scripts/ 创建测试脚本，返回 projects_dir。"""
+    for s in scripts:
+        site = s.get("site", "test-site")
+        script_dir = tmp / ".dp" / "projects" / site / "scripts"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        content = f'''\
+"""
+site: {site}
+task: {s.get("task", "demo")}
+intent: {s.get("intent", "scrape")}
+url: {s.get("url", "")}
+status: {s.get("status", "")}
+last_run:
+"""
+pass
+'''
+        (script_dir / s["name"]).write_text(content, encoding="utf-8")
+    return tmp / ".dp" / "projects"
+
+
+def _capture_list_scripts(projects_dir: Path, extra_args: list[str]) -> str:
+    """调用 list-scripts main()，捕获 stdout 输出。"""
+    argv = ["list-scripts.py", "--root", str(projects_dir.parent.parent)] + extra_args
+    buf = io.StringIO()
+    with _mock.patch("sys.argv", argv), _mock.patch("sys.stdout", buf):
+        try:
+            _ls_mod.main()
+        except SystemExit:
+            pass
+    return buf.getvalue()
+
+
+def test_list_scripts_url_filter() -> None:
+    """--url 前缀匹配：只返回 url 字段以指定前缀开头的脚本。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        _make_site_scripts(tmp, [
+            {"name": "orders.py", "url": "https://example.com/orders", "intent": "scrape"},
+            {"name": "profile.py", "url": "https://example.com/profile", "intent": "scrape"},
+            {"name": "other.py", "url": "https://other.com/path", "intent": "scrape"},
+        ])
+        out = _capture_list_scripts(tmp / ".dp" / "projects", ["--url", "https://example.com"])
+        check("list: --url 命中 orders", "orders.py" in out, repr(out))
+        check("list: --url 命中 profile", "profile.py" in out, repr(out))
+        check("list: --url 排除 other", "other.py" not in out, repr(out))
+
+
+def test_list_scripts_status_filter() -> None:
+    """--status 精确匹配：只返回 status 字段等于指定值的脚本。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        _make_site_scripts(tmp, [
+            {"name": "ok1.py", "status": "ok", "url": "https://a.com/"},
+            {"name": "broken1.py", "status": "broken", "url": "https://b.com/"},
+            {"name": "empty.py", "status": "", "url": "https://c.com/"},
+        ])
+        out_broken = _capture_list_scripts(tmp / ".dp" / "projects", ["--status", "broken"])
+        check("list: --status broken 命中", "broken1.py" in out_broken, repr(out_broken))
+        check("list: --status broken 排除 ok", "ok1.py" not in out_broken, repr(out_broken))
+
+        out_ok = _capture_list_scripts(tmp / ".dp" / "projects", ["--status", "ok"])
+        check("list: --status ok 命中", "ok1.py" in out_ok, repr(out_ok))
+        check("list: --status ok 排除 broken", "broken1.py" not in out_ok, repr(out_ok))
+
+
+def test_list_scripts_url_no_match() -> None:
+    """--url 无匹配时输出"没有匹配的脚本"。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        _make_site_scripts(tmp, [
+            {"name": "orders.py", "url": "https://example.com/orders", "intent": "scrape"},
+        ])
+        out = _capture_list_scripts(tmp / ".dp" / "projects", ["--url", "https://notexist.com"])
+        check("list: --url 无匹配提示", "没有匹配" in out, repr(out))
 
 import json as _json  # noqa: E402（已在顶层有 json，这里显式别名避免歧义）
 
@@ -719,6 +799,11 @@ def main() -> int:
     test_extract_shebang()
     test_extract_single_quote_docstring()
     test_extract_multiline_body_not_polluted()
+
+    print("\n── list-scripts --url / --status 过滤 ──")
+    test_list_scripts_url_filter()
+    test_list_scripts_status_filter()
+    test_list_scripts_url_no_match()
 
     print("\n── doctor.check() ──")
     test_doctor_check_state_missing()

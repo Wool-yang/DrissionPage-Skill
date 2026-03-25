@@ -62,3 +62,26 @@
 - 仍遵守原生交互优先、保守节奏
 - 多步骤产生的所有输出落入同一 run dir
 - 文件名使用语义名称区分不同步骤
+
+## 11. 源码 smoke vs 安装副本 smoke
+
+### 源码 smoke（日常开发验证）
+
+从 `dp-skill-source/` 所在工作区根执行（.dp/ 已初始化，浏览器已以调试端口运行）：
+
+```
+python <skill-root>/scripts/smoke.py --port 9222
+```
+
+- 验证 run-dir contract（路径、文件语义名、上传输入不进 run-dir 等）
+- 验证 7 个 case 全部 PASS
+
+### 安装副本 smoke（发布前验证）
+
+确认安装副本已从最新内层源码同步后，从外层工作区执行：
+
+1. `python <installed-skill-dir>/scripts/doctor.py --check`（若失败则先 init）
+2. `python <installed-skill-dir>/scripts/smoke.py --port 9222`
+
+- 验证端到端宿主加载行为
+- 验证已安装副本与源码 contract 一致

@@ -27,6 +27,10 @@ metadata:
 
 工作区是**跨会话可复用**的持久状态，不需要每次新会话都重新检测。
 
+**工作区根（宿主 cwd）**：
+在 Claude Code 与 Codex 中，dp 默认以当前会话工作区 cwd 作为工作区根，
+.dp/ 路径一律相对该根目录解析；调用 scripts/doctor.py 前必须确保 cwd 已切到目标工作区根。
+
 **可以跳过 preflight 的条件**（满足以下全部）：
 - `.dp/state.json` 存在
 - `state.json` 中的 `runtime_lib_version` 与当前 skill 的 `runtime-lib-version` 一致

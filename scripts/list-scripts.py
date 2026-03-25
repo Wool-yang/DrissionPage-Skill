@@ -50,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", default=None, help="显式指定目标项目根目录")
     parser.add_argument("--site", default=None, help="只列出指定站点的脚本")
     parser.add_argument("--intent", default=None, help="只列出包含指定 intent 关键词的脚本")
+    parser.add_argument("--url", default=None, help="只列出 url 字段以指定前缀开头的脚本")
+    parser.add_argument("--status", default=None, help="只列出 status 字段精确匹配的脚本（如 broken、ok）")
     return parser.parse_args()
 
 
@@ -79,6 +81,14 @@ def main() -> None:
 
         # --intent 过滤（子串匹配，方便人工查询）
         if args.intent and args.intent.lower() not in fields.get("intent", "").lower():
+            continue
+
+        # --url 过滤（前缀匹配，对应 SKILL.md 三级匹配第二优先级）
+        if args.url and not fields.get("url", "").startswith(args.url):
+            continue
+
+        # --status 过滤（精确匹配）
+        if args.status and fields.get("status", "") != args.status:
             continue
 
         # 输出：文件路径 + 各字段

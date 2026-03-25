@@ -226,3 +226,197 @@ page.ele("#agree").click()  # 或 .check()
 # 文件上传
 page.ele("input[type=file]").click.to_upload("/path/to/file.txt")
 ```
+
+---
+
+## Workflow 5：文件上传（upload）
+
+**触发词**：上传、upload、file input
+
+```python
+# ── 接通用脚本头 ──
+
+# 配置（替换为实际值）
+SITE = "site-name"
+FILE_PATH = "/absolute/path/to/file.txt"   # 要上传的本地文件（调用方提供，不进 run-dir）
+FILE_INPUT_SEL = "input[type=file]"        # 文件 input 选择器
+
+# 执行
+try:
+    run = site_run_dir(SITE, "upload")
+    # 被上传文件视为外部输入，不复制进 run-dir
+    page.ele(FILE_INPUT_SEL).click.to_upload(FILE_PATH)
+    page.wait.doc_loaded()
+    # run-dir 只保存执行中生成的产物（确认截图等）
+    screenshot(page, run / "result.png")
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
+```
+
+**contract**：
+- 被上传文件视为外部输入，**不放入 run-dir**
+- run-dir 只保存确认截图或结果元数据等执行产物
+
+---
+
+## Workflow 6：文件下载（download）
+
+**触发词**：下载、download、保存文件
+
+```python
+# ── 接通用脚本头 ──
+
+# 配置（替换为实际值）
+SITE = "site-name"
+DOWNLOAD_SEL = "#download-btn"   # 下载触发元素选择器
+FILENAME = "data.csv"            # 语义文件名；无法预判时用 None 保留原始名
+
+# 执行
+try:
+    run = site_run_dir(SITE, "download")
+    ele = page.ele(DOWNLOAD_SEL)
+    ele.click.to_download(
+        save_path=str(run),
+        rename=FILENAME,         # 有语义名时重命名；None 则保留原始文件名
+    )
+    page.browser.wait.downloads_done(timeout=60)
+    print(f"[dp] 下载完成 → {run}")
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
+```
+
+**contract**：
+- 下载文件落到**当前 run-dir**
+- 同一次任务只有一个 run-dir
+- 文件名优先使用语义名；无法预判时保留原始文件名
+
+---
+
+## Workflow 7：新标签页（new-tab）
+
+**触发词**：新标签页、新 tab、target=\_blank
+
+```python
+# ── 接通用脚本头 ──
+
+# 配置（替换为实际值）
+SITE = "site-name"
+LINK_SEL = "a[target='_blank']"  # 触发新标签页的链接选择器
+
+# 执行
+try:
+    run = site_run_dir(SITE, "newtab")      # 整个任务只用这一个 run-dir
+    screenshot(page, run / "before.png")    # 可选：记录原页面状态
+
+    new_tab = page.ele(LINK_SEL).click.for_new_tab()
+    # 备选：tab_id = page.browser.wait.new_tab(timeout=10)
+    #        new_tab = page.get_tab(tab_id)
+
+    new_tab.wait.doc_loaded()
+    screenshot(new_tab, run / "newtab.png")
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
+```
+
+**contract**：
+- 标签页切换**不创建新 run-dir**
+- 父页面和新标签页的所有输出落入同一 run-dir
+- 文件名语义化区分步骤（`before.png`、`newtab.png` 等）
+
+---
+
+## Workflow 8：WebPage cookie 同步（web-page-sync）
+
+**触发词**：复用登录态、同步 cookies、WebPage、requests 模式、不走页面点击
+
+```python
+"""
+site: <site-name>
+task: <一句话描述>
+intent: web-page-sync
+url: <目标 API URL>
+tags: <可选>
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+last_run:
+status:
+usage: python scripts/<name>.py [--port 9222]
+"""
+import sys
+from pathlib import Path
+
+def _load_dp_lib(start: Path) -> None:
+    for base in (start.resolve().parent, *start.resolve().parents):
+        for lib in (base / "lib", base / ".dp" / "lib"):
+            if (lib / "connect.py").exists() and (lib / "output.py").exists():
+                sys.path.insert(0, str(lib))
+                return
+    raise RuntimeError("未找到 .dp/lib，请先运行 doctor.py 初始化工作区。")
+
+_load_dp_lib(Path(__file__))
+from connect import connect_web_page, parse_port
+from output import site_run_dir
+from utils import save_json, mark_script_status
+
+# 配置（替换为实际值）
+SITE = "site-name"
+API_URL = "https://example.com/api/data"
+
+try:
+    run = site_run_dir(SITE, "web-page-sync")
+    page = connect_web_page(parse_port())   # WebPage，默认 'd'（浏览器）模式
+    page.change_mode('s')                  # 切换到 session 模式，自动同步浏览器 cookies
+    page.get(API_URL)
+    save_json(page.json, run / "data.json")
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
+```
+
+**何时用 WebPage**：用户已在浏览器登录，希望复用当前 cookies 通过 requests 高效抓取接口数据，而不是继续走页面点击。connect_browser() 不能切换模式；需要 session 模式时必须用 connect_web_page()。
+
+---
+
+## Workflow 9：自定义多步任务（custom）
+
+**触发词**：多步、multi-step，或任何无法映射到单一内置意图的复合任务
+
+```python
+# ── 接通用脚本头 ──
+
+# 配置
+SITE = "site-name"
+
+# 执行（示例：截图列表 → 点进详情 → 提取数据）
+try:
+    run = site_run_dir(SITE, "custom")      # 整个任务只创建一个 run-dir
+
+    # 步骤 1
+    page.wait.doc_loaded()
+    screenshot(page, run / "list.png")
+
+    # 步骤 2
+    native_click(page.ele("css:.item:first-child"))
+    page.wait.doc_loaded()
+    screenshot(page, run / "detail.png")
+
+    # 步骤 3
+    save_json({"title": page.title, "url": page.url}, run / "detail.json")
+
+    print(f"[dp] 完成，输出 → {run}")
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
+```
+
+**contract**：
+- 多步骤产生的所有输出落入**同一 run-dir**（整个任务只调用一次 `site_run_dir()`）
+- 文件名用语义名称区分步骤（`list.png`、`detail.png`、`detail.json` 等）
