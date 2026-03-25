@@ -78,18 +78,23 @@ def _latest_run_dir(case: str) -> Path | None:
     return dirs[0] if dirs else None
 
 
-def _run_script(script: str, port: str) -> bool:
+def _run_script(script: str, port: str, timeout: int = 60) -> bool:
     """将 script 写入 .dp/tmp/_smoke_case.py，用 venv Python 执行，返回是否成功。"""
     tmp = WORKSPACE / "tmp" / "_smoke_case.py"
     tmp.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(script, encoding="utf-8")
-    result = subprocess.run(
-        [str(_venv_python()), "-B", str(tmp), "--port", port],
-        capture_output=True, text=True, encoding="utf-8",
-    )
-    if result.returncode != 0:
-        print(f"    [stderr] {result.stderr.strip()[:300]}")
-    return result.returncode == 0
+    try:
+        result = subprocess.run(
+            [str(_venv_python()), "-B", str(tmp), "--port", port],
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            print(f"    [stderr] {result.stderr.strip()[:300]}")
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        print(f"    [timeout] case 超时（>{timeout}s），已强制终止", file=sys.stderr)
+        return False
 
 
 # ── Fixture HTTP Server ────────────────────────────────────────────────────────
