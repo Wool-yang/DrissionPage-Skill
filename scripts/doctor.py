@@ -224,7 +224,11 @@ def check() -> list[str]:
         return issues
 
     py = venv_python()
-    if not py.exists():
+    try:
+        py_exists = py.exists()
+    except OSError:
+        py_exists = False  # 文件存在但不可访问（如 Windows 下不可读的 symlink）
+    if not py_exists:
         issues.append(".dp/.venv/ 虚拟环境不存在或已损坏")
     else:
         try:
