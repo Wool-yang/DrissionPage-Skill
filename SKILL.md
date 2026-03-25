@@ -23,13 +23,31 @@ metadata:
 
 ## 执行流程
 
-### 1. Preflight（环境检测）
+### 1. Preflight（工作区检测）
 
-- 先运行 bundled `scripts/doctor.py --check`
-- 若退出码为 1，立即运行 bundled `scripts/doctor.py` 修复工作区
-- 初始化完成后，工作区 Python 固定为：
-  - Windows：`.dp/.venv/Scripts/python.exe`
-  - macOS / Linux：`.dp/.venv/bin/python`
+工作区是**跨会话可复用**的持久状态，不需要每次新会话都重新检测。
+
+**可以跳过 preflight 的条件**（满足以下全部）：
+- `.dp/state.json` 存在
+- `state.json` 中的 `bundle_version` 与当前 bundle 一致
+
+**需要运行 preflight 的情况**：
+- `.dp/` 不存在、`.dp/.venv/` 缺失、`.dp/lib/` 缺失
+- `.dp/state.json` 不存在或版本不一致
+- 任务执行时出现明确的环境错误
+- 用户显式要求修复
+
+**操作**：
+1. 运行 `scripts/doctor.py --check`
+2. 若退出码为 1，运行 `scripts/doctor.py` 修复
+3. 修复完成后工作区 Python 固定为：
+   - Windows：`.dp/.venv/Scripts/python.exe`
+   - macOS / Linux：`.dp/.venv/bin/python`
+
+**doctor 的职责边界**：doctor 只检测/修复**工作区环境**（venv、lib、版本一致性）。
+以下属于**任务运行时检查**，不由 doctor 负责：
+- 浏览器是否已打开、调试端口是否可连接
+- 当前页面是否正确、当前会话是否已登录
 
 ### 2. 识别意图和对象
 

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import ast
 import argparse
+import json
+import re
 import shutil
 import subprocess
 import sys
@@ -24,10 +26,46 @@ from pathlib import Path
 WORKSPACE = Path(".dp")
 VENV = WORKSPACE / ".venv"
 LIB = WORKSPACE / "lib"
+STATE = WORKSPACE / "state.json"
 SKILL_DIR = Path(__file__).parent.parent  # <skill-root>/
 TEMPLATES = SKILL_DIR / "templates"
 
 MIN_PYTHON = (3, 10)
+
+
+# ── 状态文件 ──────────────────────────────────────────────────────────────────
+
+def _read_bundle_version() -> str:
+    """从 SKILL.md frontmatter 读取当前 bundle 版本。"""
+    try:
+        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        m = re.search(r'bundle-version:\s*["\']?([^"\'\s\n]+)["\']?', text)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _read_state() -> dict:
+    """读取 .dp/state.json，失败返回空字典。"""
+    try:
+        return json.loads(STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_state(bundle_version: str) -> None:
+    """写入 .dp/state.json，记录版本和最后初始化时间。"""
+    from datetime import datetime, timezone
+    STATE.write_text(
+        json.dumps({
+            "bundle_version": bundle_version,
+            "lib_version": bundle_version,
+            "last_doctor_ok_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        }, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -171,6 +209,14 @@ def check() -> list[str]:
         if not (LIB / name).exists():
             issues.append(f".dp/lib/{name} 缺失")
 
+    bundle_v = _read_bundle_version()
+    state = _read_state()
+    if not STATE.exists():
+        issues.append(".dp/state.json 不存在（工作区需要重新初始化）")
+    elif state.get("lib_version") != bundle_v:
+        lib_v = state.get("lib_version", "未知")
+        issues.append(f".dp/lib 版本 {lib_v!r} 与 bundle {bundle_v!r} 不一致，需要升级")
+
     return issues
 
 
@@ -207,19 +253,24 @@ def init(force: bool = False) -> bool:
             print("[dp] 错误：安装 DrissionPage 失败", file=sys.stderr)
             return False
 
-    # 4. lib 模板文件
+    # 4. lib 模板文件（始终覆盖，确保与当前 bundle 版本一致）
     (LIB / "__init__.py").touch(exist_ok=True)
     for name in ("connect.py", "output.py", "utils.py"):
         src, dst = TEMPLATES / name, LIB / name
-        if src.exists() and (not dst.exists() or force):
+        if src.exists():
             shutil.copy2(src, dst)
-            print(f"[dp] 写入 {dst}")
+            print(f"[dp] 同步 {dst}")
 
     # 5. 工作空间文档（首次）
     _write_workspace_docs()
 
+    # 6. 写入/更新持久状态
+    bundle_v = _read_bundle_version()
+    _write_state(bundle_v)
+
     print("[dp] ✓ 工作空间就绪：.dp/")
     print(f"[dp]   Python: {venv_python()}")
+    print(f"[dp]   bundle: {bundle_v}")
     return True
 
 

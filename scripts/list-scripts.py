@@ -21,16 +21,18 @@ def find_projects_dir(start: Path) -> Path | None:
 
 
 def extract_fields(path: Path) -> dict[str, str]:
-    """从脚本文件头的 docstring 中提取字段，返回字典。"""
+    """只从脚本头第一个 docstring 中提取字段，不扫描正文。"""
     fields: dict[str, str] = {}
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        text = path.read_text(encoding="utf-8")
+        m = re.search(r'(\'\'\'|""")(.*?)\1', text, re.DOTALL)
+        if not m:
+            return fields
+        for line in m.group(2).splitlines():
             stripped = line.strip()
             for key in _FIELDS:
-                prefix = f"{key}:"
-                if stripped.startswith(prefix):
-                    val = stripped[len(prefix):].strip()
-                    # 只有 # 前有空白时才视为行内注释，避免截断 URL 中的 # (如 /#/page)
+                if stripped.startswith(f"{key}:"):
+                    val = stripped[len(key) + 1:].strip()
                     val = re.sub(r'\s+#.*$', '', val).strip()
                     if val:
                         fields[key] = val

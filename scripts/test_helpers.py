@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
 """
-_rewrite_header_fields / mark_script_status 最小回归测试。
+_rewrite_header_fields / mark_script_status / extract_fields 最小回归测试。
 无第三方依赖，直接调真实实现。退出码 0=全过，1=有失败。
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
 import tempfile
 from datetime import date
 from pathlib import Path
 
-# 将 templates/ 加入 sys.path，使 utils 可在无 DrissionPage 环境下 import
+# templates/ 加入 sys.path，使 utils 可在无 DrissionPage 环境下 import
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "templates"))
 from utils import _rewrite_header_fields, mark_script_status  # noqa: E402
+
+# list-scripts.py 文件名含连字符，用 importlib 加载
+_ls_spec = importlib.util.spec_from_file_location(
+    "list_scripts", Path(__file__).parent / "list-scripts.py"
+)
+_ls_mod = importlib.util.module_from_spec(_ls_spec)
+_ls_spec.loader.exec_module(_ls_mod)
+extract_fields = _ls_mod.extract_fields
 
 # ── 测试框架 ──────────────────────────────────────────────────────────────────
 
@@ -162,6 +171,139 @@ def test_mark_script_status_integration() -> None:
         p.unlink(missing_ok=True)
 
 
+# ── extract_fields 测试用例 ───────────────────────────────────────────────────
+
+# 正文里有同名字段，不应被提取
+_BODY_POLLUTES = '''\
+"""
+site: test-site
+task: 抓取订单
+intent: scrape
+url: https://example.com/orders
+status:
+last_run:
+"""
+
+def report():
+    # status: 正在运行
+    last_run: int = 0
+    x = """
+status: ready
+last_run: 2020-01-01
+"""
+    return x
+'''
+
+# URL 含 # (SPA 路由)
+_URL_WITH_HASH = '''\
+"""
+site: test-site
+task: 登录
+intent: login
+url: https://example.com/#/signin
+status:
+"""
+pass
+'''
+
+# shebang + 双引号 docstring
+_SHEBANG_DOUBLE = '''\
+#!/usr/bin/env python3
+"""
+site: shebang-site
+task: 截图
+intent: screenshot
+url: https://example.com/
+status: ok
+"""
+pass
+'''
+
+# 单引号 docstring
+_SINGLE_QUOTE_EXTRACT = """\
+'''
+site: single-quote-site
+task: 表单
+intent: form
+url: https://example.com/form
+status: broken
+'''
+pass
+"""
+
+# 正文里有多行字符串包含字段文本
+_MULTILINE_BODY = '''\
+"""
+site: test-site
+task: 数据抓取
+intent: scrape
+status: ok
+"""
+TEMPLATE = """
+task: 这不是元数据
+status: in-template
+"""
+'''
+
+
+def test_extract_only_docstring() -> None:
+    """正文中的字段不污染提取结果。"""
+    p = _tmp(_BODY_POLLUTES)
+    try:
+        fields = extract_fields(p)
+        check("extract: task 正确提取", fields.get("task") == "抓取订单", repr(fields))
+        check("extract: intent 正确提取", fields.get("intent") == "scrape", repr(fields))
+        check("extract: url 正确提取", fields.get("url") == "https://example.com/orders", repr(fields))
+        # 正文里的 status: / last_run: 不应被提取（头部字段为空应返回空）
+        check("extract: 正文 status 不污染", fields.get("status", "") == "", repr(fields))
+        check("extract: 正文 last_run 不污染", fields.get("last_run", "") == "", repr(fields))
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_extract_url_with_hash() -> None:
+    """URL 中的 # 不被截断。"""
+    p = _tmp(_URL_WITH_HASH)
+    try:
+        fields = extract_fields(p)
+        check("extract: SPA URL 完整保留", fields.get("url") == "https://example.com/#/signin", repr(fields))
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_extract_shebang() -> None:
+    """shebang 行不影响 docstring 解析。"""
+    p = _tmp(_SHEBANG_DOUBLE)
+    try:
+        fields = extract_fields(p)
+        check("extract: shebang 脚本 task 提取正确", fields.get("task") == "截图", repr(fields))
+        check("extract: shebang 脚本 intent 提取正确", fields.get("intent") == "screenshot", repr(fields))
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_extract_single_quote_docstring() -> None:
+    """单引号 docstring 正常提取。"""
+    p = _tmp(_SINGLE_QUOTE_EXTRACT)
+    try:
+        fields = extract_fields(p)
+        check("extract: 单引号 task 提取正确", fields.get("task") == "表单", repr(fields))
+        check("extract: 单引号 status 提取正确", fields.get("status") == "broken", repr(fields))
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_extract_multiline_body_not_polluted() -> None:
+    """正文多行字符串里的字段不污染索引。"""
+    p = _tmp(_MULTILINE_BODY)
+    try:
+        fields = extract_fields(p)
+        check("extract: 多行正文 task 不被覆盖", fields.get("task") == "数据抓取", repr(fields))
+        check("extract: 多行正文 status 不被覆盖", fields.get("status") == "ok", repr(fields))
+    finally:
+        p.unlink(missing_ok=True)
+
+
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -175,6 +317,13 @@ def main() -> int:
 
     print("\n── mark_script_status (integration) ──")
     test_mark_script_status_integration()
+
+    print("\n── extract_fields ──")
+    test_extract_only_docstring()
+    test_extract_url_with_hash()
+    test_extract_shebang()
+    test_extract_single_quote_docstring()
+    test_extract_multiline_body_not_polluted()
 
     print()
     if _failed:
