@@ -434,15 +434,21 @@ def test_doctor_init_garbage_venv_no_traceback() -> None:
 def test_doctor_init_lib_overwrite_and_state() -> None:
     """init() 修复路径能覆盖 .dp/lib/* 并写出正确字段的 state.json。
 
-    方法：创建真实最小 venv，放入假 DrissionPage 包让导入检查通过，
-    再在 lib/ 放旧内容，调 init()，验证 lib 被覆盖、state.json 写入正确字段。
+    方法：在 _patch_doctor 会指向的 VENV 路径创建真实最小 venv，
+    放入假 DrissionPage 包让导入检查通过（不联网），再在 lib/ 放旧内容，
+    调 init()，验证 lib 被覆盖、state.json 写入正确字段。
     """
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
+        # _patch_doctor 会将 WORKSPACE = tmp/.dp，VENV = tmp/.dp/.venv
+        # 所以 venv 必须创建在这个路径，init() 才能找到它
+        dp = tmp / ".dp"
+        venv_dir = dp / ".venv"
+        venv_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1. 创建真实最小 venv（约 1-2 秒，但测试的是真实行为）
         import subprocess as _sp
-        venv_dir = tmp / ".venv"
+
+        # 1. 在 doctor 实际会用的 VENV 路径创建真实最小 venv
         r = _sp.run([sys.executable, "-m", "venv", str(venv_dir)],
                     capture_output=True, timeout=30)
         if r.returncode != 0:
@@ -459,7 +465,8 @@ def test_doctor_init_lib_overwrite_and_state() -> None:
             check("init: state.json 字段（找不到 venv Python，跳过）", True, "skipped")
             return
 
-        # 3. 在 venv site-packages 放假 DrissionPage，让导入检查通过
+        # 3. 在此 venv 的 site-packages 放假 DrissionPage，
+        #    让 init() 的 "import DrissionPage" 检查通过，无需联网安装
         sp_r = _sp.run([str(venv_py), "-c",
                         "import site; print(site.getsitepackages()[0])"],
                        capture_output=True, text=True, timeout=10)
@@ -469,9 +476,10 @@ def test_doctor_init_lib_overwrite_and_state() -> None:
             (sp_dir / "__init__.py").write_text("# fake DrissionPage for testing\n",
                                                 encoding="utf-8")
 
-        # 4. 在 lib/ 放旧内容（确保 init() 确实覆盖了它）
-        with _patch_doctor(tmp) as dp:
-            lib_dir = dp / "lib"
+        # 4. patch doctor 指向 tmp（WORKSPACE=tmp/.dp，VENV=tmp/.dp/.venv），
+        #    在 lib/ 放旧内容，然后调 init()
+        with _patch_doctor(tmp) as patched_dp:
+            lib_dir = patched_dp / "lib"
             lib_dir.mkdir(parents=True, exist_ok=True)
             for name in ("connect.py", "output.py", "utils.py"):
                 (lib_dir / name).write_text("# STALE CONTENT", encoding="utf-8")
@@ -488,11 +496,12 @@ def test_doctor_init_lib_overwrite_and_state() -> None:
             # 5. 验证 lib 文件被覆盖（不再是旧内容）
             for name in ("connect.py", "output.py", "utils.py"):
                 content = (lib_dir / name).read_text(encoding="utf-8")
-                check(f"init: lib/{name} 已覆盖", content != "# STALE CONTENT",
+                check(f"init: lib/{name} 已覆盖",
+                      content != "# STALE CONTENT",
                       f"content[:40]={content[:40]!r}")
 
             # 6. 验证 state.json 写入了正确字段
-            state_path = dp / "state.json"
+            state_path = patched_dp / "state.json"
             if state_path.exists():
                 state = _json.loads(state_path.read_text(encoding="utf-8"))
                 check("init: state.json 含 runtime_lib_version",

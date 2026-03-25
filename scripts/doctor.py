@@ -158,19 +158,26 @@ def create_venv(use_uv: bool) -> bool:
     print("[dp] 创建虚拟环境...")
     ver_str = f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}"
 
-    if use_uv:
-        print(f"[dp] uv venv（Python {ver_str}+）")
-        result = subprocess.run(
-            ["uv", "venv", str(VENV), "--python", ver_str],
-            timeout=60,
-        )
-    else:
-        python_exe = find_python()
-        if not python_exe:
-            print(f"[dp] 错误：未找到 Python {ver_str}+ 解释器", file=sys.stderr)
-            return False
-        print(f"[dp] python -m venv（{python_exe}）")
-        result = subprocess.run([python_exe, "-m", "venv", str(VENV)], timeout=60)
+    try:
+        if use_uv:
+            print(f"[dp] uv venv（Python {ver_str}+）")
+            result = subprocess.run(
+                ["uv", "venv", str(VENV), "--python", ver_str],
+                timeout=60,
+            )
+        else:
+            python_exe = find_python()
+            if not python_exe:
+                print(f"[dp] 错误：未找到 Python {ver_str}+ 解释器", file=sys.stderr)
+                return False
+            print(f"[dp] python -m venv（{python_exe}）")
+            result = subprocess.run([python_exe, "-m", "venv", str(VENV)], timeout=60)
+    except (OSError, PermissionError) as e:
+        print(f"[dp] 错误：创建虚拟环境时工具不可执行：{e}", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"[dp] 错误：创建虚拟环境失败：{e}", file=sys.stderr)
+        return False
 
     if result.returncode != 0:
         print("[dp] 错误：创建虚拟环境失败", file=sys.stderr)
@@ -188,7 +195,6 @@ def install_drissionpage(use_uv: bool) -> bool:
         pkg_args = ["DrissionPage"]
 
     if use_uv:
-        # 传入 venv 目录，uv 自动识别并安装到该 venv
         cmd = ["uv", "pip", "install", "--python", str(VENV)] + pkg_args
     else:
         pip = VENV / "Scripts" / "pip.exe"
@@ -196,8 +202,15 @@ def install_drissionpage(use_uv: bool) -> bool:
             pip = VENV / "bin" / "pip"
         cmd = [str(pip), "install"] + pkg_args
 
-    result = subprocess.run(cmd, timeout=120)
-    return result.returncode == 0
+    try:
+        result = subprocess.run(cmd, timeout=120)
+        return result.returncode == 0
+    except (OSError, PermissionError) as e:
+        print(f"[dp] 错误：安装工具不可执行：{e}", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"[dp] 错误：安装 DrissionPage 失败：{e}", file=sys.stderr)
+        return False
 
 
 # ── 检测与初始化 ──────────────────────────────────────────────────────────────
