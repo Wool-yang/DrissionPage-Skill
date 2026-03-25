@@ -160,6 +160,18 @@ def validate_rule_markers(root: Path) -> None:
         fail("SKILL.md 缺少 list-scripts 显式根路径说明")
 
 
+def run_unit_tests(root: Path) -> None:
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts" / "test_helpers.py")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if result.returncode != 0:
+        fail(f"单元测试失败：\n{result.stdout}{result.stderr}")
+
+
 def main() -> None:
     root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else SKILL_ROOT
     if not root.exists():
@@ -174,6 +186,7 @@ def main() -> None:
     validate_json(root)
     validate_python(root)
     validate_rule_markers(root)
+    run_unit_tests(root)
     print("[OK] bundle looks clean")
 
 

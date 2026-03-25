@@ -1,11 +1,16 @@
 """通用操作封装——截图、数据保存、等待、原生交互等高频操作。"""
+from __future__ import annotations
+
 import json
 import re
 import sys
 from datetime import date
 from pathlib import Path
-from DrissionPage import ChromiumPage
-from DrissionPage._elements.chromium_element import ChromiumElement
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from DrissionPage import ChromiumPage
+    from DrissionPage._elements.chromium_element import ChromiumElement
 
 
 def screenshot(page: ChromiumPage, path: Path, full_page: bool = True) -> Path:
