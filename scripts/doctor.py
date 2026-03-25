@@ -285,7 +285,11 @@ def init(force: bool = False) -> bool:
         gitignore.write_text("*\n")
 
     # 2. 虚拟环境
-    if not venv_python().exists() or force:
+    try:
+        venv_ok = venv_python().exists()
+    except OSError:
+        venv_ok = False  # 文件存在但不可访问（如 Windows 下不可读的 symlink）
+    if not venv_ok or force:
         if not create_venv(use_uv):
             return False
 
