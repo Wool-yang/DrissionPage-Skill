@@ -580,17 +580,23 @@ def test_doctor_init_always_rewrites_readme() -> None:
 
 
 def test_install_path_independence() -> None:
-    """doctor.py 应仅通过 __file__ 定位 SKILL.md，不依赖固定目录名。"""
+    """doctor.py 应仅通过 __file__ 定位 SKILL.md，不依赖固定安装目录名。
+    验证方式：SKILL_DIR 能找到 SKILL.md（说明路径计算正确），
+    且 doctor.py 源码本身不硬编码任何固定安装路径。
+    """
     skill_dir = _doctor.SKILL_DIR
     check(
         "doctor SKILL_DIR 通过 __file__ 推导且 SKILL.md 存在",
         (skill_dir / "SKILL.md").exists(),
         f"SKILL_DIR={skill_dir}",
     )
+    # 验证 doctor.py 源码中不出现写死的 .agents 安装路径字符串
+    doctor_src = (Path(_doctor.__file__).resolve()).read_text(encoding="utf-8")
+    hardcoded = ".agents/skills/dp"
     check(
-        "doctor SKILL_DIR 不含 .agents",
-        ".agents" not in str(skill_dir).replace("\\", "/"),
-        str(skill_dir),
+        "doctor.py 源码不含硬编码安装路径",
+        hardcoded not in doctor_src,
+        f"found: {hardcoded!r}",
     )
 
 
