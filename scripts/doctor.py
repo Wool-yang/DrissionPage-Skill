@@ -158,23 +158,33 @@ def create_venv(use_uv: bool) -> bool:
     print("[dp] 创建虚拟环境...")
     ver_str = f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}"
 
+    # 若 venv 目录已存在（损坏或不可用），尝试删除再重建
+    if VENV.exists():
+        try:
+            shutil.rmtree(VENV)
+        except Exception:
+            # Windows 下 junction/symlink 可能需要系统命令删除
+            try:
+                subprocess.run(
+                    ["cmd", "/c", "rmdir", "/s", "/q", str(VENV)],
+                    timeout=30, capture_output=True,
+                )
+            except Exception:
+                pass  # 尽力而为；后续 uv/venv 命令失败会给出错误
+
     try:
         if use_uv:
             print(f"[dp] uv venv（Python {ver_str}+）")
-            # 若 venv 目录已存在（损坏或不可用），传 --clear 让 uv 替换
-            uv_cmd = ["uv", "venv", str(VENV), "--python", ver_str]
-            if VENV.exists():
-                uv_cmd.append("--clear")
-            result = subprocess.run(uv_cmd, timeout=60)
+            result = subprocess.run(
+                ["uv", "venv", str(VENV), "--python", ver_str],
+                timeout=60,
+            )
         else:
             python_exe = find_python()
             if not python_exe:
                 print(f"[dp] 错误：未找到 Python {ver_str}+ 解释器", file=sys.stderr)
                 return False
             print(f"[dp] python -m venv（{python_exe}）")
-            # 损坏的 venv 目录需先删除再重建
-            if VENV.exists() and not venv_python().exists():
-                shutil.rmtree(VENV, ignore_errors=True)
             result = subprocess.run([python_exe, "-m", "venv", str(VENV)], timeout=60)
     except (OSError, PermissionError) as e:
         print(f"[dp] 错误：创建虚拟环境时工具不可执行：{e}", file=sys.stderr)
