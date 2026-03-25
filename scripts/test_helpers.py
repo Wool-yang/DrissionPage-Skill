@@ -639,7 +639,7 @@ def test_validate_bundle_type_rejected() -> None:
 
 
 def test_validate_old_output_contract_rejected() -> None:
-    """evals.json 含旧输出路径 output/YYYY-MM-DD/ 时 validate_output_contract 应失败。"""
+    """evals.json 含旧输出路径 output/YYYY-MM-DD/（真实日期）时应失败。"""
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         (root / "evals").mkdir()
@@ -651,7 +651,24 @@ def test_validate_old_output_contract_rejected() -> None:
         (root / "SKILL.md").write_text("# skill\n", encoding="utf-8")
         (root / "references").mkdir()
         (root / "references" / "workflows.md").write_text("# workflows\n", encoding="utf-8")
-        _expect_fail("validate: 旧输出路径应失败",
+        _expect_fail("validate: 旧输出路径（真实日期）应失败",
+                     lambda: _vb.validate_output_contract(root))
+
+
+def test_validate_placeholder_output_contract_rejected() -> None:
+    """evals.json 含占位符写法 output/YYYY-MM-DD/（字面量模板）时同样应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "evals").mkdir()
+        (root / "evals" / "evals.json").write_text(
+            '{"skill_name":"dp","evals":[{"expected_output":"output/YYYY-MM-DD/data.json"}]}',
+            encoding="utf-8",
+        )
+        (root / "evals" / "smoke-checklist.md").write_text("# checklist\n", encoding="utf-8")
+        (root / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        (root / "references").mkdir()
+        (root / "references" / "workflows.md").write_text("# workflows\n", encoding="utf-8")
+        _expect_fail("validate: 旧输出路径（占位符 YYYY-MM-DD）应失败",
                      lambda: _vb.validate_output_contract(root))
 
 
@@ -726,6 +743,7 @@ def main() -> int:
     test_validate_missing_runtime_lib_version()
     test_validate_bundle_type_rejected()
     test_validate_old_output_contract_rejected()
+    test_validate_placeholder_output_contract_rejected()
     test_validate_agents_text_rejected()
     test_validate_missing_site_run_dir()
 

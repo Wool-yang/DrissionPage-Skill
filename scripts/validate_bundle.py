@@ -175,10 +175,15 @@ def validate_rule_markers(root: Path) -> None:
 
 
 def validate_output_contract(root: Path) -> None:
-    """检查关键文件不含旧的 output/YYYY-MM-DD/ 路径格式。"""
+    """检查关键文件不含旧的 output/YYYY-MM-DD/ 路径格式。
+
+    同时拦截两类写法：
+    - 真实日期：output/2026-03-20/      （正则 [0-9]{4}-[0-9]{2}-[0-9]{2}）
+    - 占位符  ：output/YYYY-MM-DD/      （字面量模板写法，同样是旧 contract）
+    """
     import re as _re
-    # 旧格式特征：output 目录后直接跟 YYYY-MM-DD/（中间无 script-name 层）
-    old_pattern = _re.compile(r'output/\d{4}-\d{2}-\d{2}/')
+    # 旧格式：output 后直接跟 YYYY-MM-DD 形式（真实日期或字面占位符），中间无 script-name 层
+    old_pattern = _re.compile(r'output/(\d{4}-\d{2}-\d{2}|YYYY-MM-DD)/')
     for rel in (
         "evals/evals.json",
         "evals/smoke-checklist.md",
