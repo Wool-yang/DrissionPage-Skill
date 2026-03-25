@@ -163,7 +163,7 @@ def validate_rule_markers(root: Path) -> None:
 def run_unit_tests(root: Path) -> None:
     import subprocess
     result = subprocess.run(
-        [sys.executable, str(root / "scripts" / "test_helpers.py")],
+        [sys.executable, "-B", str(root / "scripts" / "test_helpers.py")],
         capture_output=True,
         text=True,
         encoding="utf-8",
