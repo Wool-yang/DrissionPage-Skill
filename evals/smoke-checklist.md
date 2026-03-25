@@ -38,3 +38,27 @@
 - 临时脚本落到 `.dp/tmp/_run.py`
 - 已沉淀脚本写入 `.dp/projects/<site>/scripts/`
 - 站点 README 按规则更新
+
+## 7. 上传场景检查
+
+- 上传使用 `click.to_upload()`，不手动设 `input[type=file].value`
+- 被上传文件视为输入，不放入 run-dir
+- run-dir 内只保存执行中生成的新文件（如截图确认）
+
+## 8. 下载场景检查
+
+- 下载使用 `click.to_download()`
+- 同一次任务只有一个 run dir
+- 下载文件保存到当前 run dir，文件名优先语义名
+
+## 9. 新标签页场景检查
+
+- 使用 `click.for_new_tab()` 或 `wait.new_tab()` 切换
+- 标签页切换不创建新 run dir
+- 同一任务所有输出归到同一 run dir
+
+## 10. Custom 多步场景检查
+
+- 仍遵守原生交互优先、保守节奏
+- 多步骤产生的所有输出落入同一 run dir
+- 文件名使用语义名称区分不同步骤

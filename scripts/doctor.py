@@ -327,18 +327,19 @@ def init(force: bool = False) -> bool:
 
 def _write_workspace_docs() -> None:
     readme = WORKSPACE / "README.md"
-    if not readme.exists():
-        readme.write_text(
-            "# .dp/ — DrissionPage 工作空间\n\n"
-            "| 路径 | 用途 |\n|---|---|\n"
-            "| `.venv/` | Python 虚拟环境（uv 或标准 venv） |\n"
-            "| `lib/` | 共用库（connect / output / utils） |\n"
-            "| `projects/<site>/` | 按网站存放脚本和输出 |\n"
-            "| `tmp/` | 临时区（gitignore: *） |\n\n"
-            "输出结构：`projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS_mmm/`\n"
-            "每个目录对应一次执行，目录内文件用语义名称（data.json、screenshot.png 等）。\n",
-            encoding="utf-8",
-        )
+    # 每次 init 成功都重写，确保工作区文档不停留在旧 contract
+    readme.write_text(
+        "# .dp/ — DrissionPage 工作空间\n\n"
+        "| 路径 | 用途 |\n|---|---|\n"
+        "| `.venv/` | Python 虚拟环境（uv 或标准 venv） |\n"
+        "| `lib/` | 共用库（connect / output / utils） |\n"
+        "| `projects/<site>/` | 按网站存放脚本和输出 |\n"
+        "| `tmp/` | 临时区（gitignore: *） |\n\n"
+        "输出结构（run-dir contract）：\n"
+        "`projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS_mmm/`\n"
+        "每个目录对应一次执行，目录内文件用语义名称（data.json、screenshot.png 等）。\n",
+        encoding="utf-8",
+    )
 
 
 # ── 入口 ──────────────────────────────────────────────────────────────────────

@@ -5,14 +5,13 @@ description: >
 compatibility: >
   需要宿主客户端能够读取此 skill、运行本地 Python 与 shell 命令、读取 bundled scripts/references，并在目标工作区写文件。默认假设 Python 3.10+、可写文件系统、以及可连接本地 Chromium 远程调试端口的环境。
 metadata:
-  bundle-version: "2026-03-20.1"
-  runtime-lib-version: "2026-03-25.1"
-  bundle-type: "canonical-source"
+  bundle-version: "2026-03-26.1"
+  runtime-lib-version: "2026-03-26.1"
 ---
 
 # 浏览器自动化
 
-这是 `dp` 的 canonical source bundle。客户端应按自己的机制消费或安装这份 skill；此 source bundle 不负责生成任何客户端专属安装目录或配置产物。
+这是 `dp` skill 的公开安装源。客户端可以把它安装到任意本地 skill 目录；skill 的执行逻辑不依赖固定安装目录名，不假设自身位于特定路径。
 
 优先复用这个 skill 包里的脚本、模板和参考文档，不要在每次任务里重写通用辅助逻辑。
 
@@ -62,6 +61,22 @@ metadata:
   - 纯请求、无需浏览器交互 -> **SessionPage**
 
 选不准时默认用 **ChromiumPage**。
+
+### 2b. 站点名规范化
+
+`site-name` 需满足 `[a-z0-9-]+` 格式，按以下优先级确定：
+
+1. 优先复用已有 `.dp/projects/<site>/` 目录名
+2. 其次使用调用方显式提供的站点名
+3. 否则从目标 URL 的 hostname 推导
+
+hostname 推导规则（由 `normalize_site_name()` 实现）：
+- 转小写
+- 去掉 `www.` 前缀
+- 连续非 `[a-z0-9]` 字符替换为单个 `-`
+- 去掉首尾 `-`
+- 空值回退为 `site`
+- 不做主域截断（`news.ycombinator.com` → `news-ycombinator-com`）
 
 ### 3. 端口与连接策略
 

@@ -24,6 +24,7 @@ REQUIRED_FILES = [
     "scripts/doctor.py",
     "scripts/list-scripts.py",
     "scripts/validate_bundle.py",
+    "scripts/test_helpers.py",
     "templates/connect.py",
     "templates/output.py",
     "templates/utils.py",
@@ -39,6 +40,9 @@ FORBIDDEN_TEXT_PATTERNS = [
     "$ARGUMENTS",
     "!`",
     ".claude/skills/dp",
+    ".agents/skills/dp",
+    "canonical source bundle",
+    "canonical-source",
     "运行 /dp",
     "openai.yaml",
 ]
@@ -87,6 +91,9 @@ def parse_frontmatter(skill_md: Path) -> dict[str, str]:
     if "runtime-lib-version:" not in frontmatter:
         fail("metadata 中缺少 runtime-lib-version")
 
+    if "bundle-type:" in frontmatter:
+        fail("SKILL.md frontmatter 不应包含已废弃的 bundle-type 字段")
+
     return {"name": name}
 
 
@@ -121,6 +128,8 @@ def validate_forbidden_text(root: Path) -> None:
         if not path.is_file():
             continue
         if path == root / "scripts" / "validate_bundle.py":
+            continue
+        if path == root / "scripts" / "test_helpers.py":
             continue
         if path.suffix not in {".md", ".py", ".json", ".gitignore"}:
             continue
@@ -166,14 +175,37 @@ def validate_rule_markers(root: Path) -> None:
 
 
 def validate_output_contract(root: Path) -> None:
-    """检查 evals 和 checklist 不含旧的 output/YYYY-MM-DD/ 路径格式。"""
+    """检查关键文件不含旧的 output/YYYY-MM-DD/ 路径格式。"""
     import re as _re
     # 旧格式特征：output 目录后直接跟 YYYY-MM-DD/（中间无 script-name 层）
     old_pattern = _re.compile(r'output/\d{4}-\d{2}-\d{2}/')
-    for rel in ("evals/evals.json", "evals/smoke-checklist.md"):
+    for rel in (
+        "evals/evals.json",
+        "evals/smoke-checklist.md",
+        "SKILL.md",
+        "references/workflows.md",
+    ):
         text = (root / rel).read_text(encoding="utf-8")
         if old_pattern.search(text):
             fail(f"{rel} 含有旧的输出路径格式 output/YYYY-MM-DD/，应改为 output/<script-name>/YYYY-MM-DD_HHMMSS_mmm/")
+
+
+def validate_cross_file_consistency(root: Path) -> None:
+    """跨文件一致性校验：output.py 函数签名 / workflows.md 字段与导入。"""
+    output_py = (root / "templates" / "output.py").read_text(encoding="utf-8")
+    if "def site_run_dir" not in output_py:
+        fail("templates/output.py 缺少 site_run_dir() 函数")
+    if "def site_output" in output_py:
+        fail("templates/output.py 不应再存在旧的 site_output() 函数")
+
+    workflows = (root / "references" / "workflows.md").read_text(encoding="utf-8")
+    if "site_run_dir" not in workflows:
+        fail("references/workflows.md 未引用 site_run_dir")
+    for field in ("intent:", "url:", "tags:", "last_run:", "status:"):
+        if field not in workflows:
+            fail(f"references/workflows.md 通用脚本头缺少字段: {field}")
+    if "mark_script_status" not in workflows:
+        fail("references/workflows.md 未使用 mark_script_status()")
 
 
 def run_unit_tests(root: Path) -> None:
@@ -203,6 +235,7 @@ def main() -> None:
     validate_python(root)
     validate_rule_markers(root)
     validate_output_contract(root)
+    validate_cross_file_consistency(root)
     run_unit_tests(root)
     cleanup_bytecode(root)  # 清除测试运行可能产生的字节码
     print("[OK] bundle looks clean")

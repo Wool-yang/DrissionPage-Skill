@@ -30,6 +30,30 @@
       "prompt": "把这个表单按字段列表填完并提交，提交后告诉我当前页面标题和 URL。",
       "expected_output": "触发 dp，选择 ChromiumPage，生成表单填写脚本，使用显式等待和原生输入/点击，完成后输出页面标题和 URL。",
       "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "帮我把这个本地文件上传到当前页面的上传控件里，然后截图确认上传成功。",
+      "expected_output": "触发 dp，选择 ChromiumPage，使用 click.to_upload() 上传文件，截图保存到 .dp/projects/<site>/output/upload/<timestamp>/result.png。run-dir 内只保存执行产生的新文件，被上传文件视为输入不放入 run-dir。",
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "点击页面上的下载按钮，把文件下载下来，告诉我文件保存在哪里。",
+      "expected_output": "触发 dp，选择 ChromiumPage，使用 click.to_download() 触发下载，同一次任务只有一个 run dir，下载文件保存到当前 run dir，文件名优先语义名，无法预推断时保留原始文件名。输出路径：.dp/projects/<site>/output/download/<timestamp>/",
+      "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "点击这个链接，它会在新标签页打开，然后截图新标签页内容。",
+      "expected_output": "触发 dp，选择 ChromiumPage，使用 click.for_new_tab() 或 wait.new_tab() 切换到新标签页，标签页切换不创建新 run dir，同一任务的所有输出归档到同一 run dir。截图保存到 .dp/projects/<site>/output/screenshot/<timestamp>/new-tab.png",
+      "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "打开订单列表页，等待加载完成后截图，再点击第一条订单查看详情，截图详情页，最后把两张截图的路径告诉我。",
+      "expected_output": "触发 dp，选择 ChromiumPage，遵守原生交互优先、保守节奏、已有浏览器优先接管。两次截图均归档到同一 run dir（.dp/projects/<site>/output/custom/<timestamp>/），文件名用语义名称如 list.png、detail.png。",
+      "files": []
     }
   ]
 }

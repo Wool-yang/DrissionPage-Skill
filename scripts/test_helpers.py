@@ -13,9 +13,11 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 
-# templates/ 加入 sys.path，使 utils 可在无 DrissionPage 环境下 import
+# templates/ 加入 sys.path，使 utils / output 可在无 DrissionPage 环境下 import
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "templates"))
 from utils import _rewrite_header_fields, mark_script_status  # noqa: E402
+from output import normalize_site_name  # noqa: E402
+import output as _output_mod  # noqa: E402
 
 # list-scripts.py 文件名含连字符，用 importlib 加载
 _ls_spec = importlib.util.spec_from_file_location(
@@ -31,6 +33,13 @@ _doc_spec = importlib.util.spec_from_file_location(
 )
 _doctor = importlib.util.module_from_spec(_doc_spec)
 _doc_spec.loader.exec_module(_doctor)
+
+# validate_bundle.py 用 importlib 加载
+_vb_spec = importlib.util.spec_from_file_location(
+    "validate_bundle", Path(__file__).parent / "validate_bundle.py"
+)
+_vb = importlib.util.module_from_spec(_vb_spec)
+_vb_spec.loader.exec_module(_vb)
 
 # ── 测试框架 ──────────────────────────────────────────────────────────────────
 
@@ -513,6 +522,160 @@ def test_doctor_init_lib_overwrite_and_state() -> None:
                 check("init: state.json 字段（state 不存在）", False, "")
 
 
+# ── normalize_site_name 测试 ──────────────────────────────────────────────────
+
+def test_normalize_site_name() -> None:
+    cases = [
+        ("", "site"),
+        ("example.com", "example-com"),
+        ("www.example.com", "example-com"),
+        ("NEWS.YCOMBINATOR.COM", "news-ycombinator-com"),
+        ("news.ycombinator.com", "news-ycombinator-com"),
+        ("  spaces.around.com  ", "spaces-around-com"),
+        ("sub.sub.example.co.uk", "sub-sub-example-co-uk"),
+        ("example--double.com", "example-double-com"),
+        ("www.", "site"),
+        ("123.example.com", "123-example-com"),
+    ]
+    for raw, expected in cases:
+        result = normalize_site_name(raw)
+        check(
+            f"normalize_site_name({raw!r})",
+            result == expected,
+            f"got {result!r}, want {expected!r}",
+        )
+
+
+def test_site_run_dir_normalizes() -> None:
+    """site_run_dir() 内部应调用 normalize_site_name，保证 www./大写 等被规范化。"""
+    with tempfile.TemporaryDirectory() as d:
+        orig_ws = _output_mod.workspace_root
+        _output_mod.workspace_root = lambda: Path(d)
+        try:
+            run = _output_mod.site_run_dir("www.Example.com", "test")
+            check(
+                "site_run_dir normalize: www.Example.com -> example-com",
+                "example-com" in str(run).replace("\\", "/"),
+                str(run),
+            )
+        finally:
+            _output_mod.workspace_root = orig_ws
+
+
+# ── doctor 其他行为测试 ───────────────────────────────────────────────────────
+
+def test_doctor_init_always_rewrites_readme() -> None:
+    """_write_workspace_docs() 无论 README 是否已存在都应重写为新 contract。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            dp.joinpath("README.md").write_text("# OLD CONTENT", encoding="utf-8")
+            _doctor._write_workspace_docs()
+            content = dp.joinpath("README.md").read_text(encoding="utf-8")
+            check("doctor README 旧文件被重写", "OLD CONTENT" not in content, content[:60])
+            check(
+                "doctor README 含 run-dir contract",
+                "HHMMSS" in content or "run-dir" in content,
+                content[:120],
+            )
+
+
+def test_install_path_independence() -> None:
+    """doctor.py 应仅通过 __file__ 定位 SKILL.md，不依赖固定目录名。"""
+    skill_dir = _doctor.SKILL_DIR
+    check(
+        "doctor SKILL_DIR 通过 __file__ 推导且 SKILL.md 存在",
+        (skill_dir / "SKILL.md").exists(),
+        f"SKILL_DIR={skill_dir}",
+    )
+    check(
+        "doctor SKILL_DIR 不含 .agents",
+        ".agents" not in str(skill_dir).replace("\\", "/"),
+        str(skill_dir),
+    )
+
+
+# ── validate_bundle 失败路径测试 ──────────────────────────────────────────────
+
+def _expect_fail(name: str, fn) -> None:
+    """辅助：期望 fn() 触发 SystemExit(1)。"""
+    try:
+        fn()
+        check(name, False, "未触发 SystemExit")
+    except SystemExit as e:
+        check(name, e.code == 1, f"exit code={e.code}")
+
+
+def test_validate_missing_runtime_lib_version() -> None:
+    """frontmatter 缺少 runtime-lib-version 时 parse_frontmatter 应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "SKILL.md"
+        p.write_text(
+            '---\nname: dp\ndescription: >\n  t\ncompatibility: >\n  t\n'
+            'metadata:\n  bundle-version: "2026-03-26.1"\n---\n# body\n',
+            encoding="utf-8",
+        )
+        _expect_fail("validate: 缺少 runtime-lib-version 应失败",
+                     lambda: _vb.parse_frontmatter(p))
+
+
+def test_validate_bundle_type_rejected() -> None:
+    """frontmatter 含已废弃的 bundle-type 时 parse_frontmatter 应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "SKILL.md"
+        p.write_text(
+            '---\nname: dp\ndescription: >\n  t\ncompatibility: >\n  t\n'
+            'metadata:\n  bundle-version: "2026-03-26.1"\n'
+            '  runtime-lib-version: "2026-03-26.1"\n  bundle-type: "x"\n---\n# body\n',
+            encoding="utf-8",
+        )
+        _expect_fail("validate: bundle-type 应被拒绝",
+                     lambda: _vb.parse_frontmatter(p))
+
+
+def test_validate_old_output_contract_rejected() -> None:
+    """evals.json 含旧输出路径 output/YYYY-MM-DD/ 时 validate_output_contract 应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "evals").mkdir()
+        (root / "evals" / "evals.json").write_text(
+            '{"skill_name":"dp","evals":[{"expected_output":"output/2026-03-20/data.json"}]}',
+            encoding="utf-8",
+        )
+        (root / "evals" / "smoke-checklist.md").write_text("# checklist\n", encoding="utf-8")
+        (root / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        (root / "references").mkdir()
+        (root / "references" / "workflows.md").write_text("# workflows\n", encoding="utf-8")
+        _expect_fail("validate: 旧输出路径应失败",
+                     lambda: _vb.validate_output_contract(root))
+
+
+def test_validate_agents_text_rejected() -> None:
+    """文件含 .agents/skills/dp 耦合文本时 validate_forbidden_text 应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "SKILL.md").write_text(
+            "# test\n" + ".agents" + "/skills/dp" + "\n",  # 拆分构造，避免本文件自身被扫描触发
+            encoding="utf-8",
+        )
+        _expect_fail("validate: .agents 耦合文本应失败",
+                     lambda: _vb.validate_forbidden_text(root))
+
+
+def test_validate_missing_site_run_dir() -> None:
+    """output.py 缺少 site_run_dir 函数时 validate_cross_file_consistency 应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "templates").mkdir()
+        (root / "templates" / "output.py").write_text("def old_func(): pass\n", encoding="utf-8")
+        (root / "references").mkdir()
+        (root / "references" / "workflows.md").write_text(
+            "site_run_dir\nmark_script_status\nintent:\nurl:\ntags:\nlast_run:\nstatus:\n",
+            encoding="utf-8",
+        )
+        _expect_fail("validate: 缺少 site_run_dir 应失败",
+                     lambda: _vb.validate_cross_file_consistency(root))
+
+
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -544,6 +707,21 @@ def main() -> int:
     print("\n── doctor.init() ──")
     test_doctor_init_garbage_venv_no_traceback()
     test_doctor_init_lib_overwrite_and_state()
+
+    print("\n── normalize_site_name ──")
+    test_normalize_site_name()
+    test_site_run_dir_normalizes()
+
+    print("\n── doctor 其他行为 ──")
+    test_doctor_init_always_rewrites_readme()
+    test_install_path_independence()
+
+    print("\n── validate_bundle 失败路径 ──")
+    test_validate_missing_runtime_lib_version()
+    test_validate_bundle_type_rejected()
+    test_validate_old_output_contract_rejected()
+    test_validate_agents_text_rejected()
+    test_validate_missing_site_run_dir()
 
     print()
     if _failed:

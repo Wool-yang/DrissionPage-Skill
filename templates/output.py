@@ -1,6 +1,17 @@
 """统一输出路径管理——每次执行对应一个带时间戳的 run 目录。"""
+import re
 from datetime import datetime
 from pathlib import Path
+
+
+def normalize_site_name(value: str) -> str:
+    """将原始 hostname 或用户输入规范化为合法站点目录名（[a-z0-9-]+）。"""
+    s = value.strip().lower()
+    if s.startswith("www."):
+        s = s[4:]
+    s = re.sub(r'[^a-z0-9]+', '-', s)
+    s = s.strip('-')
+    return s or "site"
 
 
 def workspace_root() -> Path:
@@ -20,6 +31,7 @@ def site_run_dir(site: str, script_name: str) -> Path:
     例：site_run_dir("hn", "scrape-top")
         → .dp/projects/hn/output/scrape-top/2026-03-18_142300_123/
     """
+    site = normalize_site_name(site)
     now = datetime.now()
     ts = now.strftime("%Y-%m-%d_%H%M%S") + f"_{now.microsecond // 1000:03d}"
     path = (
