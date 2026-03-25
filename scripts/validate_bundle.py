@@ -161,6 +161,19 @@ def validate_rule_markers(root: Path) -> None:
         fail("SKILL.md 缺少默认端口规则")
     if "scripts/list-scripts.py --root <project-root>" not in skill:
         fail("SKILL.md 缺少 list-scripts 显式根路径说明")
+    if "runtime_lib_version" not in skill:
+        fail("SKILL.md 缺少 runtime_lib_version preflight 描述")
+
+
+def validate_output_contract(root: Path) -> None:
+    """检查 evals 和 checklist 不含旧的 output/YYYY-MM-DD/ 路径格式。"""
+    import re as _re
+    # 旧格式特征：output 目录后直接跟 YYYY-MM-DD/（中间无 script-name 层）
+    old_pattern = _re.compile(r'output/\d{4}-\d{2}-\d{2}/')
+    for rel in ("evals/evals.json", "evals/smoke-checklist.md"):
+        text = (root / rel).read_text(encoding="utf-8")
+        if old_pattern.search(text):
+            fail(f"{rel} 含有旧的输出路径格式 output/YYYY-MM-DD/，应改为 output/<script-name>/YYYY-MM-DD_HHMMSS_mmm/")
 
 
 def run_unit_tests(root: Path) -> None:
@@ -189,6 +202,7 @@ def main() -> None:
     validate_json(root)
     validate_python(root)
     validate_rule_markers(root)
+    validate_output_contract(root)
     run_unit_tests(root)
     cleanup_bytecode(root)  # 清除测试运行可能产生的字节码
     print("[OK] bundle looks clean")

@@ -413,6 +413,97 @@ def test_doctor_write_state_fields() -> None:
             _doctor.STATE = orig_state
 
 
+# ── doctor.init() 行为测试 ────────────────────────────────────────────────────
+
+def test_doctor_init_garbage_venv_no_traceback() -> None:
+    """init() 遇到垃圾 venv Python 时返回 False，不 traceback。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            # 创建垃圾内容的 python.exe（存在但无法执行）
+            for sub in (("Scripts", "python.exe"), ("bin", "python")):
+                fake = dp / ".venv" / sub[0] / sub[1]
+                fake.parent.mkdir(parents=True, exist_ok=True)
+                fake.write_bytes(b"\x7fELF\x00garbage")
+            try:
+                result = _doctor.init()
+                check("init: 垃圾 venv 返回 False", result is False, repr(result))
+            except Exception as e:
+                check("init: 垃圾 venv 不应 traceback", False, str(e))
+
+
+def test_doctor_init_lib_overwrite_and_state() -> None:
+    """init() 修复路径能覆盖 .dp/lib/* 并写出正确字段的 state.json。
+
+    方法：创建真实最小 venv，放入假 DrissionPage 包让导入检查通过，
+    再在 lib/ 放旧内容，调 init()，验证 lib 被覆盖、state.json 写入正确字段。
+    """
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+
+        # 1. 创建真实最小 venv（约 1-2 秒，但测试的是真实行为）
+        import subprocess as _sp
+        venv_dir = tmp / ".venv"
+        r = _sp.run([sys.executable, "-m", "venv", str(venv_dir)],
+                    capture_output=True, timeout=30)
+        if r.returncode != 0:
+            check("init: lib 覆盖（venv 创建失败，跳过）", True, "skipped")
+            check("init: state.json 字段（venv 创建失败，跳过）", True, "skipped")
+            return
+
+        # 2. 找 venv Python 路径
+        venv_py_win = venv_dir / "Scripts" / "python.exe"
+        venv_py_unix = venv_dir / "bin" / "python"
+        venv_py = venv_py_win if venv_py_win.exists() else venv_py_unix
+        if not venv_py.exists():
+            check("init: lib 覆盖（找不到 venv Python，跳过）", True, "skipped")
+            check("init: state.json 字段（找不到 venv Python，跳过）", True, "skipped")
+            return
+
+        # 3. 在 venv site-packages 放假 DrissionPage，让导入检查通过
+        sp_r = _sp.run([str(venv_py), "-c",
+                        "import site; print(site.getsitepackages()[0])"],
+                       capture_output=True, text=True, timeout=10)
+        if sp_r.returncode == 0:
+            sp_dir = Path(sp_r.stdout.strip()) / "DrissionPage"
+            sp_dir.mkdir(parents=True, exist_ok=True)
+            (sp_dir / "__init__.py").write_text("# fake DrissionPage for testing\n",
+                                                encoding="utf-8")
+
+        # 4. 在 lib/ 放旧内容（确保 init() 确实覆盖了它）
+        with _patch_doctor(tmp) as dp:
+            lib_dir = dp / "lib"
+            lib_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("connect.py", "output.py", "utils.py"):
+                (lib_dir / name).write_text("# STALE CONTENT", encoding="utf-8")
+
+            try:
+                result = _doctor.init()
+            except Exception as e:
+                check("init: lib 覆盖（init 抛异常）", False, str(e))
+                check("init: state.json 字段（init 抛异常）", False, str(e))
+                return
+
+            check("init: 返回 True", result is True, repr(result))
+
+            # 5. 验证 lib 文件被覆盖（不再是旧内容）
+            for name in ("connect.py", "output.py", "utils.py"):
+                content = (lib_dir / name).read_text(encoding="utf-8")
+                check(f"init: lib/{name} 已覆盖", content != "# STALE CONTENT",
+                      f"content[:40]={content[:40]!r}")
+
+            # 6. 验证 state.json 写入了正确字段
+            state_path = dp / "state.json"
+            if state_path.exists():
+                state = _json.loads(state_path.read_text(encoding="utf-8"))
+                check("init: state.json 含 runtime_lib_version",
+                      "runtime_lib_version" in state, str(state))
+                check("init: state.json 不含旧 lib_version",
+                      "lib_version" not in state, str(state))
+            else:
+                check("init: state.json 已创建", False, "state.json 不存在")
+                check("init: state.json 字段（state 不存在）", False, "")
+
+
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -440,6 +531,10 @@ def main() -> int:
     test_doctor_check_state_corrupted()
     test_doctor_check_python_not_executable()
     test_doctor_write_state_fields()
+
+    print("\n── doctor.init() ──")
+    test_doctor_init_garbage_venv_no_traceback()
+    test_doctor_init_lib_overwrite_and_state()
 
     print()
     if _failed:

@@ -35,28 +35,32 @@ MIN_PYTHON = (3, 10)
 
 # ── 状态文件 ──────────────────────────────────────────────────────────────────
 
-def _read_bundle_version() -> str:
-    """从 SKILL.md frontmatter 读取当前 bundle 版本。"""
+def _parse_frontmatter() -> dict[str, str]:
+    """提取 SKILL.md frontmatter block（--- 之间）中的 key: value 对，不扫描正文。"""
     try:
         text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-        m = re.search(r'bundle-version:\s*["\']?([^"\'\s\n]+)["\']?', text)
-        if m:
-            return m.group(1)
+        m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+        if not m:
+            return {}
+        result: dict[str, str] = {}
+        for line in m.group(1).splitlines():
+            kv = re.match(r'^\s*([a-zA-Z0-9_-]+):\s*["\']?([^"\'\n]+?)["\']?\s*$', line)
+            if kv:
+                result[kv.group(1)] = kv.group(2)
+        return result
     except Exception:
-        pass
-    return "unknown"
+        return {}
+
+
+def _read_bundle_version() -> str:
+    """从 SKILL.md frontmatter 读取当前 bundle 版本。"""
+    return _parse_frontmatter().get("bundle-version", "unknown")
 
 
 def _read_runtime_lib_version() -> str:
-    """从 SKILL.md 读取 runtime-lib-version，缺失时回退到 bundle-version。"""
-    try:
-        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-        m = re.search(r'runtime-lib-version:\s*["\']?([^"\'\s\n]+)["\']?', text)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-    return _read_bundle_version()
+    """从 SKILL.md frontmatter 读取 runtime-lib-version，缺失时回退到 bundle-version。"""
+    fm = _parse_frontmatter()
+    return fm.get("runtime-lib-version") or fm.get("bundle-version", "unknown")
 
 
 def _read_state() -> dict:
@@ -269,10 +273,17 @@ def init(force: bool = False) -> bool:
             return False
 
     # 3. DrissionPage 安装
-    already_installed = subprocess.run(
-        [str(venv_python()), "-c", "import DrissionPage"],
-        capture_output=True, timeout=10,
-    ).returncode == 0
+    try:
+        already_installed = subprocess.run(
+            [str(venv_python()), "-c", "import DrissionPage"],
+            capture_output=True, timeout=10,
+        ).returncode == 0
+    except (OSError, PermissionError) as e:
+        print(f"[dp] 错误：.dp/.venv/ Python 不可执行：{e}", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"[dp] 错误：检测 DrissionPage 失败：{e}", file=sys.stderr)
+        return False
 
     if not already_installed or force:
         if not install_drissionpage(use_uv):
