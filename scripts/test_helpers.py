@@ -11,6 +11,8 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
 # templates/ 加入 sys.path，使 utils 可在无 DrissionPage 环境下 import
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "templates"))
 from utils import _rewrite_header_fields, mark_script_status  # noqa: E402

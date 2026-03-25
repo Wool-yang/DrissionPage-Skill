@@ -190,6 +190,7 @@ def main() -> None:
     validate_python(root)
     validate_rule_markers(root)
     run_unit_tests(root)
+    cleanup_bytecode(root)  # 清除测试运行可能产生的字节码
     print("[OK] bundle looks clean")
 
 
