@@ -407,6 +407,53 @@ def test_list_scripts_url_no_match() -> None:
 import json as _json  # noqa: E402（已在顶层有 json，这里显式别名避免歧义）
 
 
+def test_list_scripts_json_normal() -> None:
+    """--json 返回合法 JSON 数组，每项包含预期字段和正确值。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        _make_site_scripts(tmp, [
+            {"name": "login.py", "site": "example", "task": "登录",
+             "intent": "login", "url": "https://example.com/login", "status": "ok"},
+        ])
+        out = _capture_list_scripts(tmp / ".dp" / "projects", ["--json"])
+        data = _json.loads(out)
+        check("list: --json 返回列表", isinstance(data, list), repr(out))
+        check("list: --json 非空", len(data) == 1, repr(out))
+        item = data[0]
+        for key in ("site", "file", "path", "task", "intent", "url", "tags", "status", "last_run"):
+            check(f"list: --json 包含字段 {key}", key in item, repr(item))
+        check("list: --json site 正确", item["site"] == "example", repr(item))
+        check("list: --json intent 正确", item["intent"] == "login", repr(item))
+        check("list: --json path 为绝对路径", Path(item["path"]).is_absolute(), repr(item))
+
+
+def test_list_scripts_json_no_projects() -> None:
+    """--json 在无脚本目录时返回 []，而不是中文提示。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        argv = ["list-scripts.py", "--root", str(tmp), "--json"]
+        buf = io.StringIO()
+        with _mock.patch("sys.argv", argv), _mock.patch("sys.stdout", buf):
+            try:
+                _ls_mod.main()
+            except SystemExit:
+                pass
+        out = buf.getvalue().strip()
+        check("list: --json 空目录返回 []", out == "[]", repr(out))
+
+
+def test_list_scripts_json_no_match() -> None:
+    """--json + filter 过滤后无匹配时返回 []，而不是中文提示。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        _make_site_scripts(tmp, [
+            {"name": "orders.py", "url": "https://example.com/orders", "intent": "scrape"},
+        ])
+        out = _capture_list_scripts(tmp / ".dp" / "projects", ["--json", "--status", "broken"])
+        data = _json.loads(out)
+        check("list: --json 无匹配返回 []", data == [], repr(out))
+
+
 def _patch_doctor(tmp: Path):
     """返回 context manager，临时将 doctor 模块的工作区全局变量指向 tmp/.dp。"""
     import contextlib
@@ -804,6 +851,11 @@ def main() -> int:
     test_list_scripts_url_filter()
     test_list_scripts_status_filter()
     test_list_scripts_url_no_match()
+
+    print("\n── list-scripts --json 输出 ──")
+    test_list_scripts_json_normal()
+    test_list_scripts_json_no_projects()
+    test_list_scripts_json_no_match()
 
     print("\n── doctor.check() ──")
     test_doctor_check_state_missing()
