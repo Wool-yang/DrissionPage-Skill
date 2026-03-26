@@ -1,5 +1,21 @@
 # Workflow 代码模板
 
+## 目录
+
+- [默认交互约束](#默认交互约束)
+- [通用脚本头](#通用脚本头每个脚本必须有)
+- [Workflow 1：截图 screenshot](#workflow-1截图screenshot)
+- [Workflow 2：数据抓取 scrape](#workflow-2数据抓取scrape)
+- [Workflow 3：自动登录 login](#workflow-3自动登录login)
+- [Workflow 4：表单填写 form](#workflow-4表单填写form)
+- [Workflow 5：文件上传 upload](#workflow-5文件上传upload)
+- [Workflow 6：文件下载 download](#workflow-6文件下载download)
+- [Workflow 7：新标签页 new-tab](#workflow-7新标签页new-tab)
+- [Workflow 8：WebPage cookie 同步 web-page-sync](#workflow-8webpage-cookie-同步web-page-sync)
+- [Workflow 9：自定义多步任务 custom](#workflow-9自定义多步任务custom)
+
+---
+
 每种 workflow 都包含完整的独立脚本（含连接逻辑），可直接写入 `.dp/tmp/_run.py` 执行。
 本文件里的"通用脚本头"是 canonical 骨架。客户端消费这个 source bundle 时，应直接复用它，而不是自行改写 helper 的导入与路径策略。
 

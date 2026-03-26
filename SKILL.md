@@ -5,7 +5,7 @@ description: >
 compatibility: >
   需要宿主客户端能够读取此 skill、运行本地 Python 与 shell 命令、读取 bundled scripts/references，并在目标工作区写文件。默认假设 Python 3.10+、可写文件系统、以及可连接本地 Chromium 远程调试端口的环境。
 metadata:
-  bundle-version: "2026-03-26.2"
+  bundle-version: "2026-03-26.3"
   runtime-lib-version: "2026-03-26.2"
 ---
 
@@ -111,6 +111,10 @@ hostname 推导规则（由 `normalize_site_name()` 实现）：
 - 找到匹配脚本时，优先读取并静默复用；只有复杂修改才额外询问
 - 找不到匹配脚本时，才从 `references/workflows.md` 选模板生成
 
+**三级匹配的设计意图**：`site+intent` 和 `url` 是强信号，客户端应直接复用；
+`task` 是有意保留给 Agent 的**语义判断层**，低置信度时不要强复用——
+优先生成临时脚本，或先读旧脚本再改，而不是盲目套用。
+
 ### 6. 生成并执行
 
 - 临时执行脚本统一写入 `.dp/tmp/_run.py`
@@ -127,36 +131,39 @@ hostname 推导规则（由 `normalize_site_name()` 实现）：
 - 如果任务完成后明显值得复用，将脚本沉淀到 `.dp/projects/<site>/scripts/<name>.py`
 - 沉淀脚本应在末尾用 `mark_script_status("ok")` 回写运行状态，并在 except 中回写 `"broken"`
 
+**关于失败处理与跨脚本协作**：脚本异常时如何响应（调试/重试/降级模式），
+以及多脚本任务中的数据传递（如 login 输出给 scrape 使用），
+均由 Agent 根据执行上下文**语义判断**，不预设固定协议。这是设计选择，不是遗漏。
+
 ## 站点 README 规则
 
-站点级 `README.md` 是强约定，但由客户端按规范维护，不要求由 bundled 脚本自动生成。
+站点级 `README.md` 采用**混合托管模型**：`## Scripts` 区块由 Agent 自动维护，其余章节由人工维护。
+详细规范见 `references/site-readme.md`。
 
 ### 最小骨架（必需）
 
 每个 `.dp/projects/<site>/README.md` 至少包含：
 
 - `# <site-name>`
-- `## Scripts`
+- `## Scripts`（含托管标记 `<!-- dp:scripts:start/end -->`）
 - `## Notes`
 - `## Last Updated`
 
-### 可选扩展（按需披露）
+### Scripts 托管区
 
-只有在站点复杂度确实需要时，才增加这些章节：
+`## Scripts` 使用托管标记，Agent 只更新标记之间的脚本条目，不触碰文件其他内容：
 
-- `## Login`
-- `## Common Selectors`
-- `## Output Fields`
-- `## Caveats`
+```md
+## Scripts
 
-### 更新义务
+<!-- dp:scripts:start -->
+- `scripts/login.py` - 登录并进入报表页；适用于需要复用登录态的场景；updated: 2026-03-26
+<!-- dp:scripts:end -->
+```
 
-- 新增已沉淀脚本 -> 必须在 `## Scripts` 中增加条目
-- 修改已沉淀脚本 -> 必须更新对应条目和 `Last Updated`
-- 删除已沉淀脚本 -> 必须同步移除条目
-- 临时脚本和一次性探索脚本 -> 不写入站点 README
-
-README 条目至少写明：脚本文件名、一句话用途、推荐复用场景、最后更新时间。
+- 新增/修改/删除沉淀脚本时更新托管区和 `## Last Updated`
+- 临时脚本和一次性探索脚本不写入 README
+- 若托管标记损坏或缺失，只输出 warning，不重写整份文件
 
 ## 脚本规范
 
