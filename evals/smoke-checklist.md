@@ -74,7 +74,7 @@ python <skill-root>/scripts/smoke.py --port 9222
 ```
 
 - 验证 run-dir contract（路径、文件语义名、上传输入不进 run-dir 等）
-- 验证 7 个 case 全部 PASS
+- 验证 8 个 case 全部 PASS
 
 ### 安装副本 smoke（发布前验证）
 

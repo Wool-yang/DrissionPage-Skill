@@ -54,6 +54,12 @@
       "prompt": "打开订单列表页，等待加载完成后截图，再点击第一条订单查看详情，截图详情页，最后把两张截图的路径告诉我。",
       "expected_output": "触发 dp，选择 ChromiumPage，遵守原生交互优先、保守节奏、已有浏览器优先接管。两次截图均归档到同一 run dir（.dp/projects/<site>/output/custom/<timestamp>/），文件名用语义名称如 list.png、detail.png。",
       "files": []
+    },
+    {
+      "id": 10,
+      "prompt": "帮我复用当前已登录的浏览器 session，切换到 requests 模式请求订单 API，把返回的 JSON 保存到 .dp/ 里。",
+      "expected_output": "触发 dp，选择 WebPage，连接已有浏览器，调用 change_mode('s') 自动同步浏览器 cookies 并切换到 session 模式，请求目标 API，输出到 .dp/projects/<site>/output/web-page-sync/<timestamp>/data.json。",
+      "files": []
     }
   ]
 }

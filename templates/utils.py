@@ -14,11 +14,21 @@ if TYPE_CHECKING:
 
 
 def screenshot(page: ChromiumPage, path: Path, full_page: bool = True) -> Path:
-    """等待页面加载后截图，返回保存路径。"""
+    """等待页面加载后截图，返回保存路径。
+    首次截图若超时（Chrome GPU 合成器冷启动），自动重试一次。
+    """
     page.wait.doc_loaded()
-    page.get_screenshot(path=str(path.parent), name=path.name, full_page=full_page)
-    print(f"[dp] screenshot -> {path}")
-    return path
+    for attempt in range(2):
+        try:
+            page.get_screenshot(path=str(path.parent), name=path.name, full_page=full_page)
+            print(f"[dp] screenshot -> {path}")
+            return path
+        except Exception as e:
+            if attempt == 0 and "timeout" in str(e).lower():
+                print("[dp] screenshot 超时（GPU 冷启动），重试中...")
+                continue
+            raise
+    return path  # unreachable
 
 
 def save_json(data: list | dict, path: Path) -> Path:

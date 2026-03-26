@@ -146,7 +146,7 @@ try:
     page.get("{base_url}/basic.html")
     page.wait.doc_loaded()
     run = site_run_dir("{SITE}", "screenshot")
-    page.get_screenshot(path=str(run), name="full.png", full_page=True)
+    screenshot(page, run / "full.png")
     print(f"[smoke] screenshot -> {{run / 'full.png'}}")
     mark_script_status("ok")
 except Exception:
