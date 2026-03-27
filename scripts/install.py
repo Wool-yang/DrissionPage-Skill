@@ -70,6 +70,9 @@ def _sync_dir(src: Path, dst: Path) -> int:
     只写入 src 中存在的文件，不删除 dst 中独有的文件（保护客户端自定义）。
     返回更新的文件数。
     """
+    # 类型冲突：dst 当前是文件，但 src 是目录 → 先删文件，再 mkdir
+    if dst.exists() and not dst.is_dir():
+        dst.unlink()
     dst.mkdir(parents=True, exist_ok=True)
     count = 0
     for item in src.iterdir():
@@ -79,6 +82,9 @@ def _sync_dir(src: Path, dst: Path) -> int:
         if item.is_dir():
             count += _sync_dir(item, dest)
         else:
+            # 类型冲突：dest 当前是目录，但 src 是文件 → 先删目录，再复制
+            if dest.is_dir():
+                shutil.rmtree(dest)
             shutil.copy2(item, dest)
             count += 1
     return count

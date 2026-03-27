@@ -525,6 +525,38 @@ def test_install_manifest_prune() -> None:
             _install_mod.SKILL_DIR = orig
 
 
+def test_install_file_to_dir() -> None:
+    """install: source 路径从文件升级为目录时，target 旧文件被替换为目录。"""
+    with tempfile.TemporaryDirectory() as src_d, tempfile.TemporaryDirectory() as dst_d:
+        src = Path(src_d)
+        dst = Path(dst_d) / "out"
+        dst.mkdir()
+        # 旧版：notes 是文件
+        (dst / "notes").write_text("old file", encoding="utf-8")
+        # 新版：notes 变成目录
+        (src / "notes").mkdir()
+        (src / "notes" / "readme.md").write_text("content", encoding="utf-8")
+        _install_mod._sync_dir(src, dst)
+        check("file→dir: notes 变为目录", (dst / "notes").is_dir(), "")
+        check("file→dir: notes/readme.md 存在", (dst / "notes" / "readme.md").exists(), "")
+
+
+def test_install_dir_to_file() -> None:
+    """install: source 路径从目录降级为文件时，target 旧目录被替换为文件。"""
+    with tempfile.TemporaryDirectory() as src_d, tempfile.TemporaryDirectory() as dst_d:
+        src = Path(src_d)
+        dst = Path(dst_d) / "out"
+        dst.mkdir()
+        # 旧版：notes 是目录
+        (dst / "notes").mkdir()
+        (dst / "notes" / "old.md").write_text("old", encoding="utf-8")
+        # 新版：notes 变成文件
+        (src / "notes").write_text("new content", encoding="utf-8")
+        _install_mod._sync_dir(src, dst)
+        check("dir→file: notes 变为文件", (dst / "notes").is_file(), "")
+        check("dir→file: 内容正确", (dst / "notes").read_text(encoding="utf-8") == "new content", "")
+
+
 def _patch_doctor(tmp: Path):
     """返回 context manager，临时将 doctor 模块的工作区全局变量指向 tmp/.dp。"""
     import contextlib
@@ -933,6 +965,8 @@ def main() -> int:
     test_install_preserves_custom()
     test_install_target_inside_source_guard()
     test_install_manifest_prune()
+    test_install_file_to_dir()
+    test_install_dir_to_file()
 
     print("\n── doctor.check() ──")
     test_doctor_check_state_missing()
