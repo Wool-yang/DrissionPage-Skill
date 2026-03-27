@@ -3,28 +3,65 @@
 
 同步规则：
 - source 有的文件 → 覆盖写入 target（始终更新 upstream 内容）
-- target 独有的文件 → 保留不动（保护客户端自定义文件）
-- source 删除的文件 → target 中保留（不自动删除，需客户端手动清理）
+- target 独有且不在 manifest 中的文件 → 保留（用户自定义文件）
+- manifest 记录但 source 已删除的文件 → 自动清理（upstream 旧文件）
+
+manifest 文件（target/.dp-install-manifest）记录上次安装的文件列表，用于
+精确区分"upstream 旧文件"和"用户自定义文件"。
+
+首次运行时若目标目录无 .dp-install-manifest（旧版安装或手动安装），
+本次不做旧文件清理，但会写出 manifest 供后续升级使用。
 
 用法：
   python scripts/install.py --target <target_dir>
-
-  target_dir：skill 的安装目标目录。
-  若目标目录已存在，逐项覆盖更新；若不存在，完整创建。
 
 退出码：0 成功，1 失败。
 """
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).parent.parent
+MANIFEST_FILE = ".dp-install-manifest"
 
 _EXCLUDE_NAMES = {".git", "__pycache__", ".dp", ".venv"}
 _EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
+
+
+def _read_manifest(target: Path) -> set[str]:
+    """读取已安装文件的相对路径集合。文件不存在或解析失败时返回空集合。"""
+    try:
+        data = json.loads((target / MANIFEST_FILE).read_text(encoding="utf-8"))
+        return set(data.get("files", []))
+    except Exception:
+        return set()
+
+
+def _write_manifest(target: Path, files: list[str]) -> None:
+    """写出安装清单（按路径排序）。"""
+    (target / MANIFEST_FILE).write_text(
+        json.dumps({"files": sorted(files)}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _collect_source_files(src: Path, base: Path | None = None) -> list[str]:
+    """收集 src 中所有要复制的文件的相对路径列表（使用正斜杠）。"""
+    if base is None:
+        base = src
+    result = []
+    for item in src.iterdir():
+        if item.name in _EXCLUDE_NAMES or item.suffix in _EXCLUDE_SUFFIXES:
+            continue
+        if item.is_dir():
+            result.extend(_collect_source_files(item, base))
+        else:
+            result.append(item.relative_to(base).as_posix())
+    return result
 
 
 def _sync_dir(src: Path, dst: Path) -> int:
@@ -49,8 +86,41 @@ def _sync_dir(src: Path, dst: Path) -> int:
 
 def install(target: Path) -> None:
     """将 skill bundle 同步到 target 目录。"""
+    # guard: target 不能位于 source 内部（防止无限递归）
+    target_resolved = target.resolve()
+    source_resolved = SKILL_DIR.resolve()
+    if target_resolved == source_resolved or target_resolved.is_relative_to(source_resolved):
+        raise ValueError(
+            f"target ({target_resolved}) 不能位于 source 目录 ({source_resolved}) 内部，"
+            "请指定 source 树之外的路径。"
+        )
+
+    # 读取旧 manifest（无 manifest 时为空集合，不做 prune，向后兼容旧版安装）
+    old_manifest = _read_manifest(target)
+
+    # 同步 source → target
     count = _sync_dir(SKILL_DIR, target)
-    print(f"[dp] 已同步 {count} 个文件到 {target.resolve()}")
+
+    # 收集当前 source 文件集合（使用正斜杠路径，与 manifest 一致）
+    new_files = _collect_source_files(SKILL_DIR)
+    new_files_set = set(new_files)
+
+    # 删除 manifest 记录中存在但 source 中已不存在的文件（upstream 删除的旧文件）
+    pruned = 0
+    for rel in old_manifest:
+        if rel not in new_files_set:
+            stale = target / rel
+            if stale.exists():
+                stale.unlink()
+                pruned += 1
+
+    # 写出新 manifest
+    _write_manifest(target, new_files)
+
+    summary = f"[dp] 已同步 {count} 个文件到 {target.resolve()}"
+    if pruned:
+        summary += f"（清理 {pruned} 个旧文件）"
+    print(summary)
 
 
 def main() -> None:

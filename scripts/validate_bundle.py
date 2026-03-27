@@ -22,6 +22,7 @@ ALLOWED_FRONTMATTER_KEYS = {
 REQUIRED_FILES = [
     "SKILL.md",
     "scripts/doctor.py",
+    "scripts/install.py",
     "scripts/list-scripts.py",
     "scripts/smoke.py",
     "scripts/validate_bundle.py",
@@ -156,6 +157,7 @@ def validate_json(root: Path) -> None:
 def validate_python(root: Path) -> None:
     for rel in (
         "scripts/doctor.py",
+        "scripts/install.py",
         "scripts/list-scripts.py",
         "scripts/smoke.py",
         "scripts/validate_bundle.py",

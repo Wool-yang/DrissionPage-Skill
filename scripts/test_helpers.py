@@ -27,6 +27,13 @@ _ls_mod = importlib.util.module_from_spec(_ls_spec)
 _ls_spec.loader.exec_module(_ls_mod)
 extract_fields = _ls_mod.extract_fields
 
+# install.py 用 importlib 加载
+_install_spec = importlib.util.spec_from_file_location(
+    "install", Path(__file__).parent / "install.py"
+)
+_install_mod = importlib.util.module_from_spec(_install_spec)
+_install_spec.loader.exec_module(_install_mod)
+
 # doctor.py 用 importlib 加载（便于 patch 模块级全局变量）
 _doc_spec = importlib.util.spec_from_file_location(
     "doctor", Path(__file__).parent / "doctor.py"
@@ -454,6 +461,70 @@ def test_list_scripts_json_no_match() -> None:
         check("list: --json 无匹配返回 []", data == [], repr(out))
 
 
+# ── install.py 测试 ───────────────────────────────────────────────────────────
+
+def test_install_normal() -> None:
+    """install: 文件被复制，manifest 被写出。"""
+    with tempfile.TemporaryDirectory() as src_d, tempfile.TemporaryDirectory() as dst_d:
+        src = Path(src_d)
+        dst = Path(dst_d) / "out"
+        (src / "SKILL.md").write_text("v1", encoding="utf-8")
+        (src / "scripts").mkdir()
+        (src / "scripts" / "doctor.py").write_text("# x", encoding="utf-8")
+        count = _install_mod._sync_dir(src, dst)
+        check("install: 文件数正确", count == 2, repr(count))
+        check("install: SKILL.md 已复制", (dst / "SKILL.md").exists(), "")
+        check("install: scripts/doctor.py 已复制", (dst / "scripts" / "doctor.py").exists(), "")
+
+
+def test_install_preserves_custom() -> None:
+    """install: target 独有的文件不被删除（通过 _sync_dir 验证保留行为）。"""
+    with tempfile.TemporaryDirectory() as src_d, tempfile.TemporaryDirectory() as dst_d:
+        src = Path(src_d)
+        dst = Path(dst_d) / "out"
+        dst.mkdir()
+        custom = dst / "custom.md"
+        custom.write_text("mine", encoding="utf-8")
+        (src / "SKILL.md").write_text("v2", encoding="utf-8")
+        _install_mod._sync_dir(src, dst)
+        check("install: 自定义文件保留", custom.exists(), "")
+        check("install: SKILL.md 更新", (dst / "SKILL.md").read_text(encoding="utf-8") == "v2", "")
+
+
+def test_install_target_inside_source_guard() -> None:
+    """install: target 位于 source 内部时抛出 ValueError。"""
+    inner = _install_mod.SKILL_DIR / "_test_inner_target"
+    try:
+        _install_mod.install(inner)
+        check("install: 应抛出 ValueError", False, "未抛出异常")
+    except ValueError:
+        check("install: 抛出 ValueError", True, "")
+
+
+def test_install_manifest_prune() -> None:
+    """install: manifest 记录的 upstream 旧文件在 source 删除后自动清理；无 manifest 时不 prune。"""
+    with tempfile.TemporaryDirectory() as src_d, tempfile.TemporaryDirectory() as dst_d:
+        src = Path(src_d)
+        dst = Path(dst_d) / "out"
+        dst.mkdir()
+        (src / "SKILL.md").write_text("v1", encoding="utf-8")
+        (src / "old.md").write_text("old", encoding="utf-8")
+        orig = _install_mod.SKILL_DIR
+        _install_mod.SKILL_DIR = src
+        try:
+            # 首次安装（无 manifest）：old.md 被复制，manifest 被写出
+            _install_mod.install(dst)
+            check("install: 第一次安装有 old.md", (dst / "old.md").exists(), "")
+            check("install: manifest 已写出", (dst / _install_mod.MANIFEST_FILE).exists(), "")
+            # 第二次安装：source 删除 old.md → manifest prune 自动清理
+            (src / "old.md").unlink()
+            _install_mod.install(dst)
+            check("install: manifest prune 删除 old.md", not (dst / "old.md").exists(), "")
+            check("install: SKILL.md 保留", (dst / "SKILL.md").exists(), "")
+        finally:
+            _install_mod.SKILL_DIR = orig
+
+
 def _patch_doctor(tmp: Path):
     """返回 context manager，临时将 doctor 模块的工作区全局变量指向 tmp/.dp。"""
     import contextlib
@@ -856,6 +927,12 @@ def main() -> int:
     test_list_scripts_json_normal()
     test_list_scripts_json_no_projects()
     test_list_scripts_json_no_match()
+
+    print("\n── install.py ──")
+    test_install_normal()
+    test_install_preserves_custom()
+    test_install_target_inside_source_guard()
+    test_install_manifest_prune()
 
     print("\n── doctor.check() ──")
     test_doctor_check_state_missing()
