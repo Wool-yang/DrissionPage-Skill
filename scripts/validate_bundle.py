@@ -110,6 +110,16 @@ def validate_required_files(root: Path) -> None:
             fail(f"缺少必需文件：{rel}")
 
 
+_FORBIDDEN_ROOT_DIRS = {"projects", "output"}
+
+
+def validate_source_root_layout(root: Path) -> None:
+    """检测 source root 下不允许出现的运行态目录。"""
+    for name in _FORBIDDEN_ROOT_DIRS:
+        if (root / name).exists():
+            fail(f"source root 出现不应存在的运行态目录：{name}/，请删除后再发布")
+
+
 def cleanup_bytecode(root: Path) -> None:
     for path in root.rglob("__pycache__"):
         if path.is_dir():
@@ -243,6 +253,7 @@ def main() -> None:
     print(f"[INFO] quick-check {root}")
     cleanup_bytecode(root)
     validate_required_files(root)
+    validate_source_root_layout(root)
     parse_frontmatter(root / "SKILL.md")
     validate_forbidden_paths(root)
     validate_forbidden_text(root)

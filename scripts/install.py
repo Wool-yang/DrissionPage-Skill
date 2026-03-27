@@ -29,7 +29,8 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).parent.parent
 MANIFEST_FILE = ".dp-install-manifest"
 
-_EXCLUDE_NAMES = {".git", ".github", "__pycache__", ".dp", ".venv", ".gitignore"}
+_EXCLUDE_NAMES = {".git", ".github", "__pycache__", ".dp", ".venv", ".gitignore",
+                  "projects", "output"}
 _EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
 
 
