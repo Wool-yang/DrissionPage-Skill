@@ -110,7 +110,7 @@ def validate_required_files(root: Path) -> None:
             fail(f"缺少必需文件：{rel}")
 
 
-_FORBIDDEN_ROOT_DIRS = {"projects", "output"}
+_FORBIDDEN_ROOT_DIRS = {"projects", "output", ".dp"}
 
 
 def validate_source_root_layout(root: Path) -> None:
