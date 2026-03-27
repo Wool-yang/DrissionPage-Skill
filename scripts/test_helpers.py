@@ -86,8 +86,14 @@ class _FakeOwner:
         self._ua = ua
         self.upload_paths: list[str] = []
         self.upload_waited = False
+        self.browser_cdp_calls: list[tuple[str, dict]] = []
         self.set = SimpleNamespace(upload_files=self._upload_files)
         self.wait = SimpleNamespace(upload_paths_inputted=self._upload_paths_inputted)
+        self._download_path = "/fake/owner-downloads"
+        self._browser = SimpleNamespace(
+            _download_path="/fake/browser-downloads",
+            _run_cdp=self._browser_run_cdp,
+        )
 
     def run_js(self, _script: str, as_expr: bool = True):
         return self._ua
@@ -97,6 +103,10 @@ class _FakeOwner:
 
     def _upload_paths_inputted(self) -> None:
         self.upload_waited = True
+
+    def _browser_run_cdp(self, method: str, **kwargs):
+        self.browser_cdp_calls.append((method, kwargs))
+        return {}
 
 
 class _FakeWait:
@@ -1032,6 +1042,8 @@ def test_download_file_wrapper() -> None:
         captured["target"] = target
         captured["browser_path"] = browser_path
         captured["new_tab"] = new_tab
+        target.owner._browser._download_path = browser_path
+        target.owner._download_path = browser_path
 
     with tempfile.TemporaryDirectory() as d, _mock.patch.object(
         _utils_mod, "_set_browser_download_path", _fake_set_download_path
@@ -1046,6 +1058,25 @@ def test_download_file_wrapper() -> None:
     check("download raw: 目录路径已规范化", captured.get("browser_path") == expected, repr(captured))
     check("download raw: 走原生点击", ele.click_calls == [False], repr(ele.click_calls))
     check("download raw: 返回最终路径", Path(final_path).name == "report.txt", repr(final_path))
+    check(
+        "download raw: 浏览器下载目录已恢复",
+        ele.owner._browser._download_path == "/fake/browser-downloads",
+        repr(ele.owner._browser._download_path),
+    )
+    check(
+        "download raw: owner 下载目录已恢复",
+        ele.owner._download_path == "/fake/owner-downloads",
+        repr(ele.owner._download_path),
+    )
+    check(
+        "download raw: restore 走 Browser.setDownloadBehavior",
+        any(
+            method == "Browser.setDownloadBehavior"
+            and kwargs.get("downloadPath") == "/fake/browser-downloads"
+            for method, kwargs in ele.owner.browser_cdp_calls
+        ),
+        repr(ele.owner.browser_cdp_calls),
+    )
 
 
 def test_download_file_dp_first() -> None:
