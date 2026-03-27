@@ -580,6 +580,32 @@ def test_install_dir_to_file() -> None:
             _install_mod.SKILL_DIR = orig
 
 
+def test_install_root_skip() -> None:
+    """install: source root 顶层 projects/output 被排除，嵌套子目录内的同名目录保留。"""
+    with tempfile.TemporaryDirectory() as src_d, tempfile.TemporaryDirectory() as dst_d:
+        src = Path(src_d)
+        dst = Path(dst_d) / "out"
+        dst.mkdir()
+        # 顶层运行态目录（应被排除）
+        (src / "projects" / "demo").mkdir(parents=True)
+        (src / "projects" / "demo" / "data.json").write_text("{}", encoding="utf-8")
+        (src / "output" / "run1").mkdir(parents=True)
+        (src / "output" / "run1" / "result.txt").write_text("x", encoding="utf-8")
+        # 合法嵌套目录（应被保留）
+        (src / "assets" / "output").mkdir(parents=True)
+        (src / "assets" / "output" / "keep.txt").write_text("keep", encoding="utf-8")
+        (src / "SKILL.md").write_text("v1", encoding="utf-8")
+        orig = _install_mod.SKILL_DIR
+        _install_mod.SKILL_DIR = src
+        try:
+            _install_mod.install(dst)
+        finally:
+            _install_mod.SKILL_DIR = orig
+        check("root_skip: 顶层 projects/ 未被安装", not (dst / "projects").exists(), "")
+        check("root_skip: 顶层 output/ 未被安装", not (dst / "output").exists(), "")
+        check("root_skip: assets/output/keep.txt 已安装", (dst / "assets" / "output" / "keep.txt").exists(), "")
+
+
 def _patch_doctor(tmp: Path):
     """返回 context manager，临时将 doctor 模块的工作区全局变量指向 tmp/.dp。"""
     import contextlib
@@ -990,6 +1016,7 @@ def main() -> int:
     test_install_manifest_prune()
     test_install_file_to_dir()
     test_install_dir_to_file()
+    test_install_root_skip()
 
     print("\n── doctor.check() ──")
     test_doctor_check_state_missing()
