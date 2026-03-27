@@ -5,6 +5,7 @@
 - source 有的文件 → 覆盖写入 target（始终更新 upstream 内容）
 - target 独有且不在 manifest 中的文件 → 保留（用户自定义文件）
 - manifest 记录但 source 已删除的文件 → 自动清理（upstream 旧文件）
+- 文件清理后变为空的 upstream 目录 → 自动清理（rmdir 只删空目录）
 
 manifest 文件（target/.dp-install-manifest）记录上次安装的文件列表，用于
 精确区分"upstream 旧文件"和"用户自定义文件"。
@@ -28,7 +29,7 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).parent.parent
 MANIFEST_FILE = ".dp-install-manifest"
 
-_EXCLUDE_NAMES = {".git", "__pycache__", ".dp", ".venv"}
+_EXCLUDE_NAMES = {".git", ".github", "__pycache__", ".dp", ".venv", ".gitignore"}
 _EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
 
 
@@ -119,6 +120,22 @@ def install(target: Path) -> None:
             if stale.is_file():          # 只删文件；路径已变目录说明是 file→dir 升级，不动
                 stale.unlink()
                 pruned += 1
+
+    # 清理 manifest 路径树下 upstream 删除后遗留的空目录（安全：rmdir 只删空目录）
+    old_dirs: set[str] = set()
+    for rel in old_manifest:
+        for parent in Path(rel).parents:
+            s = parent.as_posix()
+            if s != ".":
+                old_dirs.add(s)
+    for rel_dir in sorted(old_dirs, key=lambda x: x.count("/"), reverse=True):
+        d = target / rel_dir
+        if d.is_dir():
+            try:
+                d.rmdir()
+                pruned += 1
+            except OSError:
+                pass  # 非空（含新文件或用户文件），跳过
 
     # 写出新 manifest
     _write_manifest(target, new_files)

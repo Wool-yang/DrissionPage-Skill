@@ -464,17 +464,23 @@ def test_list_scripts_json_no_match() -> None:
 # ── install.py 测试 ───────────────────────────────────────────────────────────
 
 def test_install_normal() -> None:
-    """install: 文件被复制，manifest 被写出。"""
+    """install: 完整安装流程：文件被复制，manifest 被写出。"""
     with tempfile.TemporaryDirectory() as src_d, tempfile.TemporaryDirectory() as dst_d:
         src = Path(src_d)
         dst = Path(dst_d) / "out"
+        dst.mkdir()
         (src / "SKILL.md").write_text("v1", encoding="utf-8")
         (src / "scripts").mkdir()
         (src / "scripts" / "doctor.py").write_text("# x", encoding="utf-8")
-        count = _install_mod._sync_dir(src, dst)
-        check("install: 文件数正确", count == 2, repr(count))
+        orig = _install_mod.SKILL_DIR
+        _install_mod.SKILL_DIR = src
+        try:
+            _install_mod.install(dst)
+        finally:
+            _install_mod.SKILL_DIR = orig
         check("install: SKILL.md 已复制", (dst / "SKILL.md").exists(), "")
         check("install: scripts/doctor.py 已复制", (dst / "scripts" / "doctor.py").exists(), "")
+        check("install: manifest 已写出", (dst / _install_mod.MANIFEST_FILE).exists(), "")
 
 
 def test_install_preserves_custom() -> None:
@@ -550,19 +556,28 @@ def test_install_file_to_dir() -> None:
 
 
 def test_install_dir_to_file() -> None:
-    """install: source 路径从目录降级为文件时，target 旧目录被替换为文件。"""
+    """install: 完整两轮安装中 dir→file 升级路径走通。"""
     with tempfile.TemporaryDirectory() as src_d, tempfile.TemporaryDirectory() as dst_d:
         src = Path(src_d)
         dst = Path(dst_d) / "out"
         dst.mkdir()
-        # 旧版：notes 是目录
-        (dst / "notes").mkdir()
-        (dst / "notes" / "old.md").write_text("old", encoding="utf-8")
-        # 新版：notes 变成文件
-        (src / "notes").write_text("new content", encoding="utf-8")
-        _install_mod._sync_dir(src, dst)
-        check("dir→file: notes 变为文件", (dst / "notes").is_file(), "")
-        check("dir→file: 内容正确", (dst / "notes").read_text(encoding="utf-8") == "new content", "")
+        orig = _install_mod.SKILL_DIR
+        _install_mod.SKILL_DIR = src
+        try:
+            # 第一次安装：notes 是目录
+            (src / "notes").mkdir()
+            (src / "notes" / "old.md").write_text("old", encoding="utf-8")
+            _install_mod.install(dst)
+            check("dir→file: 第一次 notes 是目录", (dst / "notes").is_dir(), "")
+            # 第二次安装：notes 变为文件
+            (src / "notes" / "old.md").unlink()
+            (src / "notes").rmdir()
+            (src / "notes").write_text("new content", encoding="utf-8")
+            _install_mod.install(dst)
+            check("dir→file: notes 变为文件", (dst / "notes").is_file(), "")
+            check("dir→file: 内容正确", (dst / "notes").read_text(encoding="utf-8") == "new content", "")
+        finally:
+            _install_mod.SKILL_DIR = orig
 
 
 def _patch_doctor(tmp: Path):
