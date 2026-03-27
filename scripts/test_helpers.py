@@ -526,19 +526,27 @@ def test_install_manifest_prune() -> None:
 
 
 def test_install_file_to_dir() -> None:
-    """install: source 路径从文件升级为目录时，target 旧文件被替换为目录。"""
+    """install: 完整两轮安装中 file→dir 升级路径走通，manifest prune 不误删目录。"""
     with tempfile.TemporaryDirectory() as src_d, tempfile.TemporaryDirectory() as dst_d:
         src = Path(src_d)
         dst = Path(dst_d) / "out"
         dst.mkdir()
-        # 旧版：notes 是文件
-        (dst / "notes").write_text("old file", encoding="utf-8")
-        # 新版：notes 变成目录
-        (src / "notes").mkdir()
-        (src / "notes" / "readme.md").write_text("content", encoding="utf-8")
-        _install_mod._sync_dir(src, dst)
-        check("file→dir: notes 变为目录", (dst / "notes").is_dir(), "")
-        check("file→dir: notes/readme.md 存在", (dst / "notes" / "readme.md").exists(), "")
+        orig = _install_mod.SKILL_DIR
+        _install_mod.SKILL_DIR = src
+        try:
+            # 第一次安装：notes 是文件
+            (src / "notes").write_text("old file", encoding="utf-8")
+            _install_mod.install(dst)
+            check("file→dir: 第一次 notes 是文件", (dst / "notes").is_file(), "")
+            # 第二次安装：notes 变为目录
+            (src / "notes").unlink()
+            (src / "notes").mkdir()
+            (src / "notes" / "readme.md").write_text("content", encoding="utf-8")
+            _install_mod.install(dst)  # 修复前这里抛 IsADirectoryError
+            check("file→dir: notes 变为目录", (dst / "notes").is_dir(), "")
+            check("file→dir: notes/readme.md 存在", (dst / "notes" / "readme.md").exists(), "")
+        finally:
+            _install_mod.SKILL_DIR = orig
 
 
 def test_install_dir_to_file() -> None:

@@ -116,7 +116,7 @@ def install(target: Path) -> None:
     for rel in old_manifest:
         if rel not in new_files_set:
             stale = target / rel
-            if stale.exists():
+            if stale.is_file():          # 只删文件；路径已变目录说明是 file→dir 升级，不动
                 stale.unlink()
                 pruned += 1
 
