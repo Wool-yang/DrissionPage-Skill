@@ -63,7 +63,7 @@ def _load_dp_lib(start: Path) -> None:
 _load_dp_lib(Path(__file__))
 from connect import connect_browser, parse_port
 from output import site_run_dir
-from utils import native_click, native_input, screenshot, save_json, mark_script_status
+from utils import native_click, native_input, screenshot, save_json, mark_script_status, upload_file, download_file
 
 page = connect_browser(parse_port())
 ```
@@ -240,7 +240,7 @@ page.ele("select#lang").select.by_text("中文")
 page.ele("#agree").click()  # 或 .check()
 
 # 文件上传
-page.ele("input[type=file]").click.to_upload("/path/to/file.txt")
+upload_file(page.ele("input[type=file]"), "/path/to/file.txt")
 ```
 
 ---
@@ -261,8 +261,7 @@ FILE_INPUT_SEL = "input[type=file]"        # 文件 input 选择器
 try:
     run = site_run_dir(SITE, "upload")
     # 被上传文件视为外部输入，不复制进 run-dir
-    page.ele(FILE_INPUT_SEL).click.to_upload(FILE_PATH)
-    page.wait.doc_loaded()
+    upload_file(page.ele(FILE_INPUT_SEL), FILE_PATH)
     # run-dir 只保存执行中生成的产物（确认截图等）
     screenshot(page, run / "result.png")
     mark_script_status("ok")
@@ -274,6 +273,8 @@ except Exception:
 **contract**：
 - 被上传文件视为外部输入，**不放入 run-dir**
 - run-dir 只保存确认截图或结果元数据等执行产物
+- 对直接 `input[type=file]`，优先 `upload_file()`；它会处理跨平台路径
+  （例如 WSL Python 接管 Windows Chromium 时的 `/mnt/<drive>/...` 与 `\\wsl$\\...`）
 
 ---
 
@@ -293,8 +294,9 @@ FILENAME = "data.csv"            # 语义文件名；无法预判时用 None 保
 try:
     run = site_run_dir(SITE, "download")
     ele = page.ele(DOWNLOAD_SEL)
-    ele.click.to_download(
-        save_path=str(run),
+    download_file(
+        ele,
+        run,
         rename=FILENAME,         # 有语义名时重命名；None 则保留原始文件名
     )
     page.browser.wait.downloads_done(timeout=60)
@@ -309,6 +311,10 @@ except Exception:
 - 下载文件落到**当前 run-dir**
 - 同一次任务只有一个 run-dir
 - 文件名优先使用语义名；无法预判时保留原始文件名
+- 对下载目录优先使用 `download_file()`
+  - 同 OS 场景优先走 DrissionPage 自带下载管理
+  - 跨 OS 场景或 DP 下载失败时，再 fallback 到 raw CDP 下载目录策略
+- 对 `data:` 直链下载可优先本地直存，减少对浏览器下载事件的依赖
 
 ---
 

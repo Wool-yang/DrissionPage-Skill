@@ -223,9 +223,23 @@ def validate_cross_file_consistency(root: Path) -> None:
     if "def site_output" in output_py:
         fail("templates/output.py 不应再存在旧的 site_output() 函数")
 
+    utils_py = (root / "templates" / "utils.py").read_text(encoding="utf-8")
+    if "def browser_upload_path" not in utils_py:
+        fail("templates/utils.py 缺少 browser_upload_path() 函数")
+    if "def upload_file" not in utils_py:
+        fail("templates/utils.py 缺少 upload_file() 函数")
+    if "def browser_download_path" not in utils_py:
+        fail("templates/utils.py 缺少 browser_download_path() 函数")
+    if "def download_file" not in utils_py:
+        fail("templates/utils.py 缺少 download_file() 函数")
+
     workflows = (root / "references" / "workflows.md").read_text(encoding="utf-8")
     if "site_run_dir" not in workflows:
         fail("references/workflows.md 未引用 site_run_dir")
+    if "upload_file" not in workflows:
+        fail("references/workflows.md 未使用 upload_file()")
+    if "download_file" not in workflows:
+        fail("references/workflows.md 未使用 download_file()")
     for field in ("intent:", "url:", "tags:", "last_run:", "status:"):
         if field not in workflows:
             fail(f"references/workflows.md 通用脚本头缺少字段: {field}")

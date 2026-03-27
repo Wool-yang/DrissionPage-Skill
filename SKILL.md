@@ -5,8 +5,8 @@ description: >
 compatibility: >
   需要宿主客户端能够读取此 skill、运行本地 Python 与 shell 命令、读取 bundled scripts/references，并在目标工作区写文件。默认假设 Python 3.10+、可写文件系统、以及可连接本地 Chromium 远程调试端口的环境。
 metadata:
-  bundle-version: "2026-03-28.1"
-  runtime-lib-version: "2026-03-26.2"
+  bundle-version: "2026-03-28.8"
+  runtime-lib-version: "2026-03-28.8"
 ---
 
 # 浏览器自动化
@@ -95,7 +95,14 @@ hostname 推导规则（由 `normalize_site_name()` 实现）：
 - 点击默认顺序：`wait.clickable()` -> `scroll.to_see()` -> `wait.stop_moving()` -> `wait.not_covered()` -> `click(by_js=False)`
 - 输入默认顺序：`scroll.to_see()` -> `wait.clickable()` -> `focus()` -> `clear(by_js=False)` -> `input(..., by_js=False)`
 - 滚动 / 悬停 / 拖拽优先 `scroll.to_see()`、`hover()`、`drag()` / `drag_to()`
-- 上传 / 下载 / 新标签优先 `click.to_upload()`、`click.to_download()`、`click.for_new_tab()` / `wait.new_tab()`
+- 上传优先区分两类：
+  - 直接 `input[type=file]` 优先 bundled `upload_file(ele, path)`，它会处理跨平台路径
+  - 非 file input 但会触发 chooser 的元素，再走 `upload_file()` 内部的 chooser 路径
+- 下载优先 bundled `download_file(ele, save_path, ...)`
+  - 同 OS 场景优先走 DrissionPage 自带下载管理
+  - 跨 OS 场景（如 WSL 接管 Windows Chromium）或 DP 下载失败时，再 fallback 到 raw CDP 下载目录策略
+  - 对 `data:` 直链下载优先本地直存，不强依赖浏览器下载管理器
+- 新标签优先 `click.for_new_tab()` / `wait.new_tab()`
 - JS 只用于只读探测、辅助定位、临时打标；`by_js=True`、`this.click()`、手动派发事件仅最后兜底
 - 节奏保持保守：避免高频刷新、无间隔重试、短时间打开过多 tab、短时间扫过多目标
 

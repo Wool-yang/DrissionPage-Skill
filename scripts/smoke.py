@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import http.server
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -86,13 +87,22 @@ def _run_script(script: str, port: str, timeout: int = 60) -> bool:
     try:
         result = subprocess.run(
             [str(_venv_python()), "-B", str(tmp), "--port", port],
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
             capture_output=True, text=True, encoding="utf-8",
             timeout=timeout,
         )
         if result.returncode != 0:
+            if result.stdout.strip():
+                print(f"    [stdout] {result.stdout.strip()[:300]}")
             print(f"    [stderr] {result.stderr.strip()[:300]}")
         return result.returncode == 0
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        if e.stdout:
+            stdout = e.stdout.decode("utf-8", "ignore") if isinstance(e.stdout, bytes) else e.stdout
+            print(f"    [stdout] {stdout.strip()[:300]}")
+        if e.stderr:
+            stderr = e.stderr.decode("utf-8", "ignore") if isinstance(e.stderr, bytes) else e.stderr
+            print(f"    [stderr] {stderr.strip()[:300]}")
         print(f"    [timeout] case 超时（>{timeout}s），已强制终止", file=sys.stderr)
         return False
 
@@ -108,6 +118,14 @@ class _SilentHandler(http.server.SimpleHTTPRequestHandler):
             body = _json.dumps({"cookies": self.headers.get("Cookie", "")}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/download-file":
+            body = b"dp smoke test file\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="smoke-test.txt"')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -133,10 +151,10 @@ def _lib_loader() -> str:
 import sys
 from pathlib import Path
 sys.path.insert(0, r"{WORKSPACE / 'lib'}")
-from connect import connect_browser, parse_port
+from connect import connect_browser_fresh_tab, parse_port
 from output import site_run_dir
-from utils import native_click, native_input, screenshot, save_json, mark_script_status
-page = connect_browser(parse_port())
+from utils import native_click, native_input, screenshot, save_json, mark_script_status, upload_file, download_file
+page = connect_browser_fresh_tab(parse_port())
 '''
 
 
@@ -196,9 +214,22 @@ try:
     page.get("{base_url}/upload.html")
     page.wait.doc_loaded()
     run = site_run_dir("{SITE}", "upload")
-    page.ele("#file-input").click.to_upload(r"{upload_file}")
-    page.wait(0.5)
-    screenshot(page, run / "result.png")
+    expected_name = Path(r"{upload_file}").name
+    upload_file(page.ele("#file-input"), r"{upload_file}")
+    result_text = ""
+    for _ in range(40):
+        result_text = page.run_js(
+            "(document.getElementById('upload-result') && "
+            "document.getElementById('upload-result').textContent) || ''",
+            as_expr=True,
+        ) or ""
+        if expected_name in result_text:
+            break
+        page.wait(0.25)
+    assert expected_name in result_text, f"upload result missing: {{result_text!r}}"
+    save_json({{"result_text": result_text}}, run / "result.json")
+    page.ele("#upload-result").get_screenshot(path=str(run), name="result.png")
+    page.get("about:blank")
     mark_script_status("ok")
 except Exception:
     mark_script_status("broken")
@@ -212,11 +243,13 @@ try:
     page.get("{base_url}/download.html")
     page.wait.doc_loaded()
     run = site_run_dir("{SITE}", "download")
-    page.ele("#download-btn").click.to_download(
-        save_path=str(run),
+    mission = download_file(
+        page.ele("#download-btn"),
+        run,
         rename="smoke-test.txt",
     )
-    page.browser.wait.downloads_done(timeout=30)
+    if not isinstance(mission, Path):
+        page.browser.wait.downloads_done(timeout=30)
     print(f"[smoke] download -> {{run}}")
     mark_script_status("ok")
 except Exception:
@@ -345,11 +378,21 @@ def _verify_upload(upload_file: str) -> tuple[bool, str]:
         return False, "run-dir 不存在"
     if not (run / "result.png").exists():
         return False, "缺少 result.png"
+    result_json = run / "result.json"
+    if not result_json.exists():
+        return False, "缺少 result.json"
+    try:
+        data = json.loads(result_json.read_text(encoding="utf-8"))
+        result_text = data.get("result_text", "")
+    except Exception as e:
+        return False, f"result.json 无效 JSON：{e}"
     # 被上传文件不应出现在 run-dir 内
     uploaded_name = Path(upload_file).name
     if (run / uploaded_name).exists():
         return False, f"contract 违反：被上传文件 {uploaded_name} 出现在 run-dir 内"
-    return True, f"result.png OK，{uploaded_name} 未进入 run-dir"
+    if uploaded_name not in result_text:
+        return False, f"上传结果未包含文件名：{result_text!r}"
+    return True, f"result.png/result.json OK，{uploaded_name} 未进入 run-dir"
 
 
 def _verify_download() -> tuple[bool, str]:

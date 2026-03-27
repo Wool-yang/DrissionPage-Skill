@@ -34,13 +34,13 @@
     {
       "id": 6,
       "prompt": "帮我把这个本地文件上传到当前页面的上传控件里，然后截图确认上传成功。",
-      "expected_output": "触发 dp，选择 ChromiumPage，使用 click.to_upload() 上传文件，截图保存到 .dp/projects/<site>/output/upload/<timestamp>/result.png。run-dir 内只保存执行产生的新文件，被上传文件视为输入不放入 run-dir。",
+      "expected_output": "触发 dp，选择 ChromiumPage，使用 bundled upload_file() 上传文件；对直接 input[type=file] 优先走跨平台路径规范化 + 文件输入赋值，对 chooser 按钮再走点击上传。截图保存到 .dp/projects/<site>/output/upload/<timestamp>/result.png。run-dir 内只保存执行产生的新文件，被上传文件视为输入不放入 run-dir。",
       "files": []
     },
     {
       "id": 7,
       "prompt": "点击页面上的下载按钮，把文件下载下来，告诉我文件保存在哪里。",
-      "expected_output": "触发 dp，选择 ChromiumPage，使用 click.to_download() 触发下载，同一次任务只有一个 run dir，下载文件保存到当前 run dir，文件名优先语义名，无法预推断时保留原始文件名。输出路径：.dp/projects/<site>/output/download/<timestamp>/",
+      "expected_output": "触发 dp，选择 ChromiumPage，使用 bundled download_file() 触发下载；同 OS 场景优先走 DrissionPage 自带下载管理，跨 OS 或 DP 下载失败时 fallback 到 raw CDP 下载目录策略。同一次任务只有一个 run dir，下载文件保存到当前 run dir，文件名优先语义名，无法预推断时保留原始文件名。输出路径：.dp/projects/<site>/output/download/<timestamp>/",
       "files": []
     },
     {

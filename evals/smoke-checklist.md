@@ -41,13 +41,17 @@
 
 ## 7. 上传场景检查
 
-- 上传使用 `click.to_upload()`，不手动设 `input[type=file].value`
+- 上传使用 bundled `upload_file()`
+- 直接 `input[type=file]` 优先走跨平台路径规范化 + 文件输入赋值；chooser 按钮再走点击上传
 - 被上传文件视为输入，不放入 run-dir
 - run-dir 内只保存执行中生成的新文件（如截图确认）
 
 ## 8. 下载场景检查
 
-- 下载使用 `click.to_download()`
+- 下载使用 bundled `download_file()`
+- 同 OS 场景优先走 DrissionPage 自带下载管理
+- 跨平台场景下载目录要做规范化，避免 WSL 接管 Windows Chromium 时保存路径被本地 `Path()` 改坏
+- 对 `data:` 直链下载可优先本地直存，避免浏览器下载管理器成为单点故障
 - 同一次任务只有一个 run dir
 - 下载文件保存到当前 run dir，文件名优先语义名
 

@@ -2,7 +2,7 @@
 import argparse
 import sys
 
-from DrissionPage import ChromiumOptions, ChromiumPage, WebPage
+from DrissionPage import Chromium, ChromiumOptions, ChromiumPage, WebPage
 
 DEFAULT_PORTS = ["9222", "9333", "9444", "9111"]
 
@@ -33,6 +33,20 @@ def connect_browser(port: str | None = None) -> ChromiumPage:
         try:
             page = ChromiumPage(co)
             print(f"[dp] connected @ {p}")
+            return page
+        except Exception:
+            continue
+    _exit_no_browser(port)
+
+
+def connect_browser_fresh_tab(port: str | None = None, url: str = "about:blank") -> ChromiumPage:
+    """连接已有浏览器并新建一个标签页，避免复用可能异常的旧 tab。"""
+    for p, co in _iter_existing_browser_options(port):
+        try:
+            browser = Chromium(co)
+            tab = browser.new_tab(url=url)
+            page = ChromiumPage(co, tab_id=tab.tab_id)
+            print(f"[dp] connected fresh tab @ {p} ({tab.tab_id})")
             return page
         except Exception:
             continue
