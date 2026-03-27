@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from DrissionPage import ChromiumPage
     from DrissionPage._elements.chromium_element import ChromiumElement
 
+_MISSING = object()  # 哨兵：区分"属性不存在"与"属性值为 None"
+
 
 def _is_wsl() -> bool:
     """判断当前 Python 是否运行在 WSL。"""
@@ -73,6 +75,12 @@ def _to_windows_browser_path(path: Path) -> str:
         win_tail = posix.replace("/", "\\")
         return f"\\\\wsl$\\{distro}{win_tail}"
 
+    if _is_wsl():
+        print(
+            f"[dp] warning: WSL_DISTRO_NAME not set, cannot build UNC path for {path!r}; "
+            "falling back to POSIX (may fail in Windows Chromium)",
+            file=sys.stderr,
+        )
     return path.as_posix()
 
 
@@ -359,10 +367,30 @@ def download_file(
 
     browser_path = browser_download_path(save_path, ele)
     print(f"[dp] download strategy=raw-cdp browser_path={browser_path}")
-    _set_browser_download_path(ele, browser_path, new_tab=new_tab)
-    native_click(ele, timeout=max(10, int(timeout)))
-    final_path = _wait_download_complete(local_dir, known_names, target_name, timeout)
-    print(f"[dp] download strategy=raw-cdp done={final_path}")
+    _owner = ele.owner
+    _browser = _owner._browser
+    _orig_browser_path = getattr(_browser, "_download_path", None)
+    _orig_owner_path = getattr(_owner, "_download_path", _MISSING)
+    try:
+        _set_browser_download_path(ele, browser_path, new_tab=new_tab)
+        native_click(ele, timeout=max(10, int(timeout)))
+        final_path = _wait_download_complete(local_dir, known_names, target_name, timeout)
+        print(f"[dp] download strategy=raw-cdp done={final_path}")
+    finally:
+        # 恢复浏览器原始下载目录，避免持久污染用户会话
+        if _orig_browser_path is not None:
+            _browser._download_path = _orig_browser_path
+            if _orig_owner_path is not _MISSING:
+                _owner._download_path = _orig_owner_path
+            try:
+                _browser._run_cdp(
+                    "Browser.setDownloadBehavior",
+                    downloadPath=_orig_browser_path,
+                    behavior="allow",
+                    eventsEnabled=True,
+                )
+            except Exception:
+                pass  # 恢复失败不阻塞主流程
     return final_path
 
 

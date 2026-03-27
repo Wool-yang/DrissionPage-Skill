@@ -294,13 +294,14 @@ FILENAME = "data.csv"            # 语义文件名；无法预判时用 None 保
 try:
     run = site_run_dir(SITE, "download")
     ele = page.ele(DOWNLOAD_SEL)
-    download_file(
+    saved = download_file(
         ele,
         run,
         rename=FILENAME,         # 有语义名时重命名；None 则保留原始文件名
     )
-    page.browser.wait.downloads_done(timeout=60)
-    print(f"[dp] 下载完成 → {run}")
+    # download_file() 内部已等待完成，禁止在其后再调用下载管理器等待方法
+    # （raw-CDP 分支未注册下载管理器，调用会立即报错）
+    print(f"[dp] 下载完成 → {saved}")
     mark_script_status("ok")
 except Exception:
     mark_script_status("broken")
@@ -314,6 +315,7 @@ except Exception:
 - 对下载目录优先使用 `download_file()`
   - 同 OS 场景优先走 DrissionPage 自带下载管理
   - 跨 OS 场景或 DP 下载失败时，再 fallback 到 raw CDP 下载目录策略
+  - `download_file()` 三条分支均自带等待逻辑，返回时文件已落盘；**禁止**在其后再调用下载管理器的等待方法（raw-CDP 分支未注册到下载管理器，调用会立即报错）
 - 对 `data:` 直链下载可优先本地直存，减少对浏览器下载事件的依赖
 
 ---

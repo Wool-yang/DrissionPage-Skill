@@ -240,6 +240,8 @@ def validate_cross_file_consistency(root: Path) -> None:
         fail("references/workflows.md 未使用 upload_file()")
     if "download_file" not in workflows:
         fail("references/workflows.md 未使用 download_file()")
+    if "page.browser.wait.downloads_done" in workflows:
+        fail("references/workflows.md 不应包含 page.browser.wait.downloads_done()——download_file() 已内置等待逻辑，raw-CDP 分支调用会立即报错")
     for field in ("intent:", "url:", "tags:", "last_run:", "status:"):
         if field not in workflows:
             fail(f"references/workflows.md 通用脚本头缺少字段: {field}")
