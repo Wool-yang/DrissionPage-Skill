@@ -248,8 +248,6 @@ try:
         run,
         rename="smoke-test.txt",
     )
-    if not isinstance(mission, Path):
-        page.browser.wait.downloads_done(timeout=30)
     print(f"[smoke] download -> {{run}}")
     mark_script_status("ok")
 except Exception:

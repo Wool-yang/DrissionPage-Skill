@@ -361,6 +361,8 @@ def _write_workspace_docs() -> None:
     readme = WORKSPACE / "README.md"
     # 每次 init 成功都重写，确保工作区文档不停留在旧 contract
     readme.write_text(
+        "<!-- dp:managed — 本文件由 dp doctor 自动管理，每次 init 后覆盖重写。"
+        "如需保存站点备注，请使用 .dp/projects/<site>/README.md -->\n\n"
         "# .dp/ — DrissionPage 工作空间\n\n"
         "| 路径 | 用途 |\n|---|---|\n"
         "| `.venv/` | Python 虚拟环境（uv 或标准 venv） |\n"

@@ -240,13 +240,21 @@ def validate_cross_file_consistency(root: Path) -> None:
         fail("references/workflows.md 未使用 upload_file()")
     if "download_file" not in workflows:
         fail("references/workflows.md 未使用 download_file()")
-    if "page.browser.wait.downloads_done" in workflows:
-        fail("references/workflows.md 不应包含 page.browser.wait.downloads_done()——download_file() 已内置等待逻辑，raw-CDP 分支调用会立即报错")
     for field in ("intent:", "url:", "tags:", "last_run:", "status:"):
         if field not in workflows:
             fail(f"references/workflows.md 通用脚本头缺少字段: {field}")
     if "mark_script_status" not in workflows:
         fail("references/workflows.md 未使用 mark_script_status()")
+
+    # 下载 contract 校验：download_file() 已内置等待，禁止在其后再调下载管理器等待方法。
+    # 校验范围：workflow 模板（用户参照物）+ smoke 脚本（bundled 示例）。
+    _download_wait_ban = "page.browser.wait.downloads_done"
+    for _rel in ("references/workflows.md", "scripts/smoke.py"):
+        if _download_wait_ban in (root / _rel).read_text(encoding="utf-8"):
+            fail(
+                f"{_rel} 不应包含 {_download_wait_ban}()——"
+                "download_file() 已内置等待逻辑，raw-CDP 分支调用会立即报错"
+            )
 
 
 def run_unit_tests(root: Path) -> None:
