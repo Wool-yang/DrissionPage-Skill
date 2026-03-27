@@ -29,9 +29,10 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).parent.parent
 MANIFEST_FILE = ".dp-install-manifest"
 
-_EXCLUDE_NAMES = {".git", ".github", "__pycache__", ".dp", ".venv", ".gitignore",
-                  "projects", "output"}
+_EXCLUDE_NAMES = {".git", ".github", "__pycache__", ".dp", ".venv", ".gitignore"}
 _EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
+# 仅排除 source root 顶层的运行态目录；不传入递归调用，允许合法子目录使用同名
+_EXCLUDE_ROOT_NAMES: frozenset[str] = frozenset({"projects", "output"})
 
 
 def _read_manifest(target: Path) -> set[str]:
@@ -51,13 +52,19 @@ def _write_manifest(target: Path, files: list[str]) -> None:
     )
 
 
-def _collect_source_files(src: Path, base: Path | None = None) -> list[str]:
-    """收集 src 中所有要复制的文件的相对路径列表（使用正斜杠）。"""
+def _collect_source_files(src: Path, base: Path | None = None,
+                          root_skip: frozenset[str] = frozenset()) -> list[str]:
+    """收集 src 中所有要复制的文件的相对路径列表（使用正斜杠）。
+
+    root_skip 仅在第一层生效（不传入递归调用），用于排除 source root 顶层运行态目录。
+    """
     if base is None:
         base = src
     result = []
     for item in src.iterdir():
         if item.name in _EXCLUDE_NAMES or item.suffix in _EXCLUDE_SUFFIXES:
+            continue
+        if item.name in root_skip:
             continue
         if item.is_dir():
             result.extend(_collect_source_files(item, base))
@@ -66,10 +73,11 @@ def _collect_source_files(src: Path, base: Path | None = None) -> list[str]:
     return result
 
 
-def _sync_dir(src: Path, dst: Path) -> int:
+def _sync_dir(src: Path, dst: Path, root_skip: frozenset[str] = frozenset()) -> int:
     """递归同步 src 到 dst。
 
     只写入 src 中存在的文件，不删除 dst 中独有的文件（保护客户端自定义）。
+    root_skip 仅在第一层生效（不传入递归调用），用于排除 source root 顶层运行态目录。
     返回更新的文件数。
     """
     # 类型冲突：dst 当前是文件，但 src 是目录 → 先删文件，再 mkdir
@@ -80,9 +88,11 @@ def _sync_dir(src: Path, dst: Path) -> int:
     for item in src.iterdir():
         if item.name in _EXCLUDE_NAMES or item.suffix in _EXCLUDE_SUFFIXES:
             continue
+        if item.name in root_skip:
+            continue
         dest = dst / item.name
         if item.is_dir():
-            count += _sync_dir(item, dest)
+            count += _sync_dir(item, dest)  # root_skip 不传入递归调用
         else:
             # 类型冲突：dest 当前是目录，但 src 是文件 → 先删目录，再复制
             if dest.is_dir():
@@ -107,10 +117,10 @@ def install(target: Path) -> None:
     old_manifest = _read_manifest(target)
 
     # 同步 source → target
-    count = _sync_dir(SKILL_DIR, target)
+    count = _sync_dir(SKILL_DIR, target, root_skip=_EXCLUDE_ROOT_NAMES)
 
     # 收集当前 source 文件集合（使用正斜杠路径，与 manifest 一致）
-    new_files = _collect_source_files(SKILL_DIR)
+    new_files = _collect_source_files(SKILL_DIR, root_skip=_EXCLUDE_ROOT_NAMES)
     new_files_set = set(new_files)
 
     # 删除 manifest 记录中存在但 source 中已不存在的文件（upstream 删除的旧文件）
