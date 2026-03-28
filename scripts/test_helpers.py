@@ -758,6 +758,26 @@ def test_doctor_check_version_mismatch() -> None:
                   any("不一致" in i for i in issues), str(issues))
 
 
+def test_doctor_check_bundle_version_mismatch() -> None:
+    """runtime_lib_version 一致但 bundle_version 不一致时，check() 应返回 issue。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            current_runtime = _doctor._read_runtime_lib_version()
+            dp.joinpath("state.json").write_text(
+                _json.dumps({
+                    "bundle_version": "1970-01-01.0",
+                    "runtime_lib_version": current_runtime,
+                }),
+                encoding="utf-8",
+            )
+            issues = _doctor.check()
+            check(
+                "doctor: bundle_version 不一致被报告",
+                any("bundle" in i for i in issues),
+                str(issues),
+            )
+
+
 def test_doctor_check_state_corrupted() -> None:
     """state.json 损坏时 check() 返回 issue，不 traceback。"""
     with tempfile.TemporaryDirectory() as d:
@@ -1131,6 +1151,19 @@ def test_doctor_init_always_rewrites_readme() -> None:
             )
 
 
+def test_doctor_init_readme_managed_declaration() -> None:
+    """_write_workspace_docs() 生成的 README 应包含 dp:managed 托管声明。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            _doctor._write_workspace_docs()
+            content = dp.joinpath("README.md").read_text(encoding="utf-8")
+            check(
+                "init: README.md 含 dp:managed 声明",
+                "dp:managed" in content,
+                content[:120],
+            )
+
+
 def test_install_path_independence() -> None:
     """doctor.py 应仅通过 __file__ 定位 SKILL.md，不依赖固定安装目录名。
     验证方式：SKILL_DIR 能找到 SKILL.md（说明路径计算正确），
@@ -1310,6 +1343,7 @@ def main() -> int:
     print("\n── doctor.check() ──")
     test_doctor_check_state_missing()
     test_doctor_check_version_mismatch()
+    test_doctor_check_bundle_version_mismatch()
     test_doctor_check_state_corrupted()
     test_doctor_check_python_not_executable()
     test_doctor_write_state_fields()
@@ -1336,6 +1370,7 @@ def main() -> int:
 
     print("\n── doctor 其他行为 ──")
     test_doctor_init_always_rewrites_readme()
+    test_doctor_init_readme_managed_declaration()
     test_install_path_independence()
 
     print("\n── validate_bundle 失败路径 ──")

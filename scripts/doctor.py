@@ -275,15 +275,13 @@ def check() -> list[str]:
                 issues.append(
                     f".dp/lib runtime 版本 {state_v!r} 与当前 {runtime_v!r} 不一致，需要升级"
                 )
-            # bundle_version 差异提示（不加入 issues，不影响退出码）
-            # doc-only bump 无需重新初始化工作区，但应提示用户更新安装副本
+            # bundle_version 差异：触发工作区文档与状态刷新（init 不重建 venv，影响极小）
             state_bundle = state.get("bundle_version", "")
             skill_bundle = _read_bundle_version()
             if state_bundle and skill_bundle and state_bundle != skill_bundle:
-                print(
-                    f"[dp] ℹ️  skill bundle 版本已更新"
-                    f"（已初始化：{state_bundle} → 当前：{skill_bundle}）。"
-                    "如已重新安装 bundle，可运行 doctor.py --force 刷新 state.json。"
+                issues.append(
+                    f".dp bundle 版本 {state_bundle!r} 与当前 {skill_bundle!r} 不一致，"
+                    "工作区文档与状态需要刷新"
                 )
         except Exception:
             issues.append(".dp/state.json 损坏，无法解析，需要重新初始化")
