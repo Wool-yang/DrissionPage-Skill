@@ -190,6 +190,8 @@ def validate_rule_markers(root: Path) -> None:
         fail("SKILL.md 缺少 list-scripts 显式根路径说明")
     if "runtime_lib_version" not in skill:
         fail("SKILL.md 缺少 runtime_lib_version preflight 描述")
+    if "bundle_version" not in skill:
+        fail("SKILL.md 缺少 bundle_version preflight 描述")
     if "当前会话工作区 cwd 作为工作区根" not in skill:
         fail("SKILL.md 缺少工作区根 contract 说明")
 

@@ -278,7 +278,7 @@ def check() -> list[str]:
             # bundle_version 差异：触发工作区文档与状态刷新（init 不重建 venv，影响极小）
             state_bundle = state.get("bundle_version", "")
             skill_bundle = _read_bundle_version()
-            if state_bundle and skill_bundle and state_bundle != skill_bundle:
+            if skill_bundle not in ("", "unknown") and state_bundle != skill_bundle:
                 issues.append(
                     f".dp bundle 版本 {state_bundle!r} 与当前 {skill_bundle!r} 不一致，"
                     "工作区文档与状态需要刷新"

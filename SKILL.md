@@ -5,7 +5,7 @@ description: >
 compatibility: >
   需要宿主客户端能够读取此 skill、运行本地 Python 与 shell 命令、读取 bundled scripts/references，并在目标工作区写文件。默认假设 Python 3.10+、可写文件系统、以及可连接本地 Chromium 远程调试端口的环境。
 metadata:
-  bundle-version: "2026-03-28.11"
+  bundle-version: "2026-03-28.12"
   runtime-lib-version: "2026-03-28.9"
 ---
 

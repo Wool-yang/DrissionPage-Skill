@@ -778,6 +778,23 @@ def test_doctor_check_bundle_version_mismatch() -> None:
             )
 
 
+def test_doctor_check_bundle_version_missing() -> None:
+    """state.json 无 bundle_version 字段时，check() 应返回 issue（旧格式工作区）。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            current_runtime = _doctor._read_runtime_lib_version()
+            dp.joinpath("state.json").write_text(
+                _json.dumps({"runtime_lib_version": current_runtime}),
+                encoding="utf-8",
+            )
+            issues = _doctor.check()
+            check(
+                "doctor: bundle_version 缺失被报告",
+                any("bundle" in i for i in issues),
+                str(issues),
+            )
+
+
 def test_doctor_check_state_corrupted() -> None:
     """state.json 损坏时 check() 返回 issue，不 traceback。"""
     with tempfile.TemporaryDirectory() as d:
@@ -1344,6 +1361,7 @@ def main() -> int:
     test_doctor_check_state_missing()
     test_doctor_check_version_mismatch()
     test_doctor_check_bundle_version_mismatch()
+    test_doctor_check_bundle_version_missing()
     test_doctor_check_state_corrupted()
     test_doctor_check_python_not_executable()
     test_doctor_write_state_fields()
