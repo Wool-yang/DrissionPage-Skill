@@ -1441,8 +1441,19 @@ def main() -> int:
     test_dp_compat_get_set_download_path()
     test_dp_compat_sentinel()
 
+    print("\n── get_user_agent 直接单测 ──")
+    test_get_user_agent_prefers_as_expr()
+    test_get_user_agent_fallback_on_typeerror()
+    test_get_user_agent_returns_empty_on_all_errors()
+
     print("\n── P1-3：fresh_tab 连接语义 ──")
     test_fresh_tab_tab_id_binding()
+
+    print("\n── validate_rule_markers 章节内检查 ──")
+    test_validate_rule_markers_port_rule_needs_section()
+    test_validate_rule_markers_list_scripts_rule_needs_section()
+    test_validate_rule_markers_workspace_root_rule_needs_section()
+    test_validate_rule_markers_allows_rephrased_prose()
 
     print()
     if _failed:
@@ -1718,6 +1729,42 @@ def test_dp_compat_sentinel() -> None:
     check("compat: 有属性时哨兵不识别", not _compat_mod.is_download_path_missing(val2), repr(val2))
 
 
+# ── get_user_agent 直接单测 ───────────────────────────────────────────────────
+
+def test_get_user_agent_prefers_as_expr() -> None:
+    """as_expr=True 可用时，get_user_agent 应直接返回 UA 字符串。"""
+    class _PageWithAsExpr:
+        def run_js(self, script, as_expr=False):
+            return "Mozilla/5.0 (Windows NT 10.0)"
+
+    result = _compat_mod.get_user_agent(_PageWithAsExpr())
+    check("compat: get_user_agent as_expr 路径返回 UA", "Windows NT" in result, repr(result))
+
+
+def test_get_user_agent_fallback_on_typeerror() -> None:
+    """as_expr 参数不存在时触发 TypeError，fallback 到无参路径，仍返回 UA。"""
+    class _PageNoAsExpr:
+        def run_js(self, script, **kwargs):
+            if "as_expr" in kwargs:
+                raise TypeError("unexpected keyword argument 'as_expr'")
+            return "Mozilla/5.0 (Linux)"
+
+    result = _compat_mod.get_user_agent(_PageNoAsExpr())
+    check("compat: get_user_agent TypeError fallback 返回 UA", "Linux" in result, repr(result))
+
+
+def test_get_user_agent_returns_empty_on_all_errors() -> None:
+    """两条路径均抛异常时，get_user_agent 应返回空字符串，不抛异常。"""
+    class _PageBothFail:
+        def run_js(self, script, **kwargs):
+            if "as_expr" in kwargs:
+                raise TypeError("unexpected keyword argument 'as_expr'")
+            raise RuntimeError("cdp connection error")
+
+    result = _compat_mod.get_user_agent(_PageBothFail())
+    check("compat: get_user_agent 双路径异常返回空串", result == "", repr(result))
+
+
 # ── P1-3：fresh_tab 连接语义测试（monkeypatch Chromium/ChromiumPage）────────────
 
 def _load_connect_module():
@@ -1809,6 +1856,89 @@ def test_fresh_tab_tab_id_binding() -> None:
               f"page.tab_id={page.tab_id!r}, recorded={recorded.tab_id!r}")
     else:
         check("fresh_tab: ChromiumPage 被构造", False, "未记录到任何 ChromiumPage 实例")
+
+
+# ── validate_rule_markers 章节内检查测试 ─────────────────────────────────────
+
+_SKILL_MD_STABLE = (
+    "## 站点 README 规则\n"
+    "\nruntime_lib_version\nbundle_version\n"
+    "\n## 执行流程\n"
+)
+
+
+def _build_skill_md(preflight: str = "", port: str = "", reuse: str = "", other: str = "") -> str:
+    return (
+        _SKILL_MD_STABLE
+        + f"\n### 1. Preflight（工作区检测）\n\n{preflight}\n"
+        + f"\n### 3. 端口与连接策略\n\n{port}\n"
+        + f"\n### 5. 复用优先\n\n{reuse}\n"
+        + (f"\n## 其他章节\n\n{other}\n" if other else "")
+    )
+
+
+def test_validate_rule_markers_port_rule_needs_section() -> None:
+    """端口策略 token（9222、默认）散落在错误章节时，validate_rule_markers 应失败。"""
+    content = _build_skill_md(
+        preflight="工作区根通过 cwd 确定，.dp 目录相对该根解析",
+        port="连接到已有浏览器实例",          # 无 9222 / 默认
+        reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 传根路径",
+        other="端口 9222 默认使用",            # token 在错误章节
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_rule_markers: 端口 token 散落在错误章节时应失败",
+            lambda: _vb.validate_rule_markers(Path(d)),
+        )
+
+
+def test_validate_rule_markers_list_scripts_rule_needs_section() -> None:
+    """list-scripts/--root/cwd token 散落在错误章节时，validate_rule_markers 应失败。"""
+    content = _build_skill_md(
+        preflight="工作区根通过 cwd 确定，.dp 目录相对该根解析",
+        port="默认端口 9222",
+        reuse="先枚举已有 workflow，找不到再生成",    # 无 list-scripts.py / --root / cwd
+        other="用 list-scripts.py --root 传根路径，cwd 不在树内时需显式传",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_rule_markers: list-scripts token 散落在错误章节时应失败",
+            lambda: _vb.validate_rule_markers(Path(d)),
+        )
+
+
+def test_validate_rule_markers_workspace_root_rule_needs_section() -> None:
+    """工作区根/cwd/.dp token 散落在错误章节时，validate_rule_markers 应失败。"""
+    content = _build_skill_md(
+        preflight="检测 state.json 版本一致性",        # 无 工作区根 / cwd / .dp
+        port="默认端口 9222",
+        reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 传根路径",
+        other="工作区根通过 cwd 确定，.dp 目录相对该根解析",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_rule_markers: 工作区根 token 散落在错误章节时应失败",
+            lambda: _vb.validate_rule_markers(Path(d)),
+        )
+
+
+def test_validate_rule_markers_allows_rephrased_prose() -> None:
+    """等价语义但不同措辞时，validate_rule_markers 不应误报（防回归）。"""
+    content = _build_skill_md(
+        preflight="工作区根通过 cwd 设定，.dp 目录相对该根目录解析",
+        port="默认调试端口为 9222",
+        reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 显式传根路径",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        try:
+            _vb.validate_rule_markers(Path(d))
+            check("validate_rule_markers: 等价改写不误报", True)
+        except SystemExit:
+            check("validate_rule_markers: 等价改写不误报", False, "不应触发 SystemExit")
 
 
 if __name__ == "__main__":

@@ -183,6 +183,23 @@ def validate_python(root: Path) -> None:
         compile(source, str(path), "exec")
 
 
+def _extract_section(text: str, heading: str) -> str:
+    """提取 markdown 中指定标题的章节文本，直到下一个同级或更高级标题为止。"""
+    heading_level = len(heading) - len(heading.lstrip('#'))
+    lines = text.splitlines()
+    in_section = False
+    result = []
+    for line in lines:
+        if not in_section:
+            if line.strip() == heading.strip():
+                in_section = True
+        else:
+            if line.startswith('#') and (len(line) - len(line.lstrip('#'))) <= heading_level:
+                break
+            result.append(line)
+    return '\n'.join(result)
+
+
 def validate_rule_markers(root: Path) -> None:
     skill = (root / "SKILL.md").read_text(encoding="utf-8")
     # 稳定 contract token / 导航锚点：保持硬检查
@@ -192,13 +209,16 @@ def validate_rule_markers(root: Path) -> None:
         fail("SKILL.md 缺少 runtime_lib_version preflight 描述")
     if "bundle_version" not in skill:
         fail("SKILL.md 缺少 bundle_version preflight 描述")
-    # 多要素检查：验证语义存在，不绑定措辞
-    if "9222" not in skill or "默认" not in skill:
-        fail("SKILL.md 缺少默认端口规则（应同时提到 9222 与默认端口语义）")
-    if "list-scripts.py" not in skill or "--root" not in skill:
-        fail("SKILL.md 缺少 list-scripts 显式根路径说明（应同时提到 list-scripts.py 与 --root）")
-    if "工作区根" not in skill or "cwd" not in skill or ".dp" not in skill:
-        fail("SKILL.md 缺少工作区根 contract 说明（应同时提到工作区根、cwd、.dp）")
+    # 章节内多要素检查：token 必须出现在对应章节，不接受散落在全文的假阳性
+    port_sec = _extract_section(skill, "### 3. 端口与连接策略")
+    if "9222" not in port_sec or "默认" not in port_sec:
+        fail("SKILL.md 端口策略章节缺少默认端口说明（应在该章节内同时提到 9222 与默认端口语义）")
+    reuse_sec = _extract_section(skill, "### 5. 复用优先")
+    if "list-scripts.py" not in reuse_sec or "--root" not in reuse_sec or "cwd" not in reuse_sec:
+        fail("SKILL.md 复用优先章节缺少 list-scripts 显式根路径说明（应在该章节内同时提到 list-scripts.py、--root 与 cwd）")
+    preflight_sec = _extract_section(skill, "### 1. Preflight（工作区检测）")
+    if "工作区根" not in preflight_sec or "cwd" not in preflight_sec or ".dp" not in preflight_sec:
+        fail("SKILL.md Preflight 章节缺少工作区根说明（应在该章节内同时提到工作区根、cwd、.dp）")
 
 
 def validate_output_contract(root: Path) -> None:
