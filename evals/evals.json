@@ -5,61 +5,110 @@
       "id": 1,
       "prompt": "帮我用当前已打开的浏览器给 https://example.com 做一次全页截图，按 dp 规范归档保存。",
       "expected_output": "触发 dp，若 state.json 不存在或版本不一致则做 preflight，选择 ChromiumPage，生成并执行截图脚本，输出到 .dp/projects/<site>/output/screenshot/<timestamp>/full.png。",
+      "artifacts": ["full.png"],
+      "must_not_create": [],
+      "json_keys": [],
+      "run_dir_pattern": "projects/<site>/output/screenshot/<timestamp>/",
       "files": []
     },
     {
       "id": 2,
       "prompt": "抓取这个列表页里每个条目的标题和链接，保存成 JSON，不要新开浏览器。",
       "expected_output": "触发 dp，选择 ChromiumPage 或在充分理由下选择更轻模式，生成抓取脚本，输出到 .dp/projects/<site>/output/scrape/<timestamp>/data.json。",
+      "artifacts": ["data.json"],
+      "must_not_create": [],
+      "json_keys": [],
+      "run_dir_pattern": "projects/<site>/output/scrape/<timestamp>/",
       "files": []
     },
     {
       "id": 3,
       "prompt": "我已经在浏览器里登录了网站，帮我复用当前浏览器状态抓取订单接口返回，尽量不要继续走页面点击。",
       "expected_output": "触发 dp，优先选择 WebPage，连接已有浏览器，同步 cookies 后走 requests/session 模式获取数据。",
+      "artifacts": ["data.json"],
+      "must_not_create": [],
+      "json_keys": ["synced", "cookies"],
+      "run_dir_pattern": "projects/<site>/output/web-page-sync/<timestamp>/",
       "files": []
     },
     {
       "id": 4,
       "prompt": "打开登录页，输入账号密码并提交；输入和点击都尽量走原生交互，不要手写 DOM 事件。",
       "expected_output": "触发 dp，选择 ChromiumPage，生成遵守 native_input/native_click 约束的登录脚本；仅在凭据缺失时向用户追问。",
+      "artifacts": ["result.png"],
+      "must_not_create": [],
+      "json_keys": [],
+      "run_dir_pattern": "projects/<site>/output/login/<timestamp>/",
       "files": []
     },
     {
       "id": 5,
       "prompt": "把这个表单按字段列表填完并提交，提交后告诉我当前页面标题和 URL。",
       "expected_output": "触发 dp，选择 ChromiumPage，生成表单填写脚本，使用显式等待和原生输入/点击，完成后输出页面标题和 URL。",
+      "artifacts": ["result.png"],
+      "must_not_create": [],
+      "json_keys": [],
+      "run_dir_pattern": "projects/<site>/output/form/<timestamp>/",
       "files": []
     },
     {
       "id": 6,
       "prompt": "帮我把这个本地文件上传到当前页面的上传控件里，然后截图确认上传成功。",
       "expected_output": "触发 dp，选择 ChromiumPage，使用 bundled upload_file() 上传文件；对直接 input[type=file] 优先走跨平台路径规范化 + 文件输入赋值，对 chooser 按钮再走点击上传。截图保存到 .dp/projects/<site>/output/upload/<timestamp>/result.png。run-dir 内只保存执行产生的新文件，被上传文件视为输入不放入 run-dir。",
+      "artifacts": ["result.png", "result.json"],
+      "must_not_create": ["<uploaded-filename>"],
+      "json_keys": ["result_text"],
+      "run_dir_pattern": "projects/<site>/output/upload/<timestamp>/",
       "files": []
     },
     {
       "id": 7,
       "prompt": "点击页面上的下载按钮，把文件下载下来，告诉我文件保存在哪里。",
       "expected_output": "触发 dp，选择 ChromiumPage，使用 bundled download_file() 触发下载；同 OS 场景优先走 DrissionPage 自带下载管理，跨 OS 或 DP 下载失败时 fallback 到 raw CDP 下载目录策略。同一次任务只有一个 run dir，下载文件保存到当前 run dir，文件名优先语义名，无法预推断时保留原始文件名。输出路径：.dp/projects/<site>/output/download/<timestamp>/",
+      "artifacts": ["<downloaded-filename>"],
+      "must_not_create": [],
+      "json_keys": [],
+      "run_dir_pattern": "projects/<site>/output/download/<timestamp>/",
       "files": []
     },
     {
       "id": 8,
       "prompt": "点击这个链接，它会在新标签页打开，然后截图新标签页内容。",
       "expected_output": "触发 dp，选择 ChromiumPage，使用 click.for_new_tab() 或 wait.new_tab() 切换到新标签页，标签页切换不创建新 run dir，同一任务的所有输出归档到同一 run dir。输出路径：.dp/projects/<site>/output/newtab/<timestamp>/，文件名如 before.png、newtab.png。",
+      "artifacts": ["before.png", "newtab.png"],
+      "must_not_create": [],
+      "json_keys": [],
+      "run_dir_pattern": "projects/<site>/output/newtab/<timestamp>/",
       "files": []
     },
     {
       "id": 9,
       "prompt": "打开订单列表页，等待加载完成后截图，再点击第一条订单查看详情，截图详情页，最后把两张截图的路径告诉我。",
       "expected_output": "触发 dp，选择 ChromiumPage，遵守原生交互优先、保守节奏、已有浏览器优先接管。两次截图均归档到同一 run dir（.dp/projects/<site>/output/custom/<timestamp>/），文件名用语义名称如 list.png、detail.png。",
+      "artifacts": ["list.png", "detail.png", "detail.json"],
+      "must_not_create": [],
+      "json_keys": ["title", "url"],
+      "run_dir_pattern": "projects/<site>/output/custom/<timestamp>/",
       "files": []
     },
     {
       "id": 10,
       "prompt": "帮我复用当前已登录的浏览器 session，切换到 requests 模式请求订单 API，把返回的 JSON 保存到 .dp/ 里。",
       "expected_output": "触发 dp，选择 WebPage，连接已有浏览器，调用 change_mode('s') 自动同步浏览器 cookies 并切换到 session 模式，请求目标 API，输出到 .dp/projects/<site>/output/web-page-sync/<timestamp>/data.json。",
+      "artifacts": ["data.json"],
+      "must_not_create": [],
+      "json_keys": [],
+      "run_dir_pattern": "projects/<site>/output/web-page-sync/<timestamp>/",
       "files": []
+    },
+    {
+      "id": 11,
+      "prompt": "用纯 requests 模式（SessionPage）直接请求 API 接口，不需要打开浏览器，把返回的 JSON 保存到 .dp/ 里。",
+      "expected_output": "触发 dp，识别为纯请求场景，选择 SessionPage，直接发起 HTTP 请求，输出到 .dp/projects/<site>/output/session-page/<timestamp>/data.json。",
+      "artifacts": ["data.json"],
+      "must_not_create": [],
+      "json_keys": [],
+      "run_dir_pattern": "projects/<site>/output/session-page/<timestamp>/"
     }
   ]
 }

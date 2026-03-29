@@ -32,6 +32,12 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
+# 通过 importlib 复用 doctor.py 的 venv_python()，避免重复维护 OS-aware 逻辑
+import importlib.util as _ilu
+_doctor_spec = _ilu.spec_from_file_location("_doctor_smoke", Path(__file__).parent / "doctor.py")
+_doctor_mod = _ilu.module_from_spec(_doctor_spec)
+_doctor_spec.loader.exec_module(_doctor_mod)
+venv_python = _doctor_mod.venv_python
 FIXTURES_DIR = SKILL_ROOT / "evals" / "fixtures"
 WORKSPACE = Path(".dp")
 SITE = "dp-smoke"   # smoke 专用 site name，便于查找和清理
@@ -39,22 +45,37 @@ SITE = "dp-smoke"   # smoke 专用 site name，便于查找和清理
 
 # ── 工具 ──────────────────────────────────────────────────────────────────────
 
-def _venv_python() -> Path:
-    win = WORKSPACE / ".venv" / "Scripts" / "python.exe"
-    unix = WORKSPACE / ".venv" / "bin" / "python"
-    return win if win.exists() else unix
-
-
 def _check_workspace() -> str | None:
     """返回首个发现的问题；无问题返回 None。"""
     if not WORKSPACE.exists():
         return ".dp/ 不存在，请先运行 scripts/doctor.py 初始化工作区"
-    py = _venv_python()
+    py = venv_python()
     try:
         if not py.exists():
             return ".dp/.venv/ 不存在，请先运行 scripts/doctor.py"
     except OSError:
         return ".dp/.venv/ 不可访问"
+    # 探测实际可执行性
+    try:
+        r = subprocess.run([str(py), "--version"], capture_output=True, timeout=5)
+        if r.returncode != 0:
+            return f".dp/.venv/ Python 不可执行（返回码 {r.returncode}），请重新运行 scripts/doctor.py"
+    except (OSError, PermissionError) as e:
+        return f".dp/.venv/ Python 不可执行：{e}"
+    except subprocess.TimeoutExpired:
+        return ".dp/.venv/ Python 启动超时，请检查虚拟环境"
+    # 探测 DrissionPage 是否真正安装
+    try:
+        r = subprocess.run(
+            [str(py), "-c", "import DrissionPage"],
+            capture_output=True, timeout=10,
+        )
+        if r.returncode != 0:
+            return ".dp/.venv/ 中未安装 DrissionPage，请重新运行 scripts/doctor.py"
+    except (OSError, PermissionError) as e:
+        return f".dp/.venv/ DrissionPage 检测失败：{e}"
+    except subprocess.TimeoutExpired:
+        return ".dp/.venv/ DrissionPage 导入超时"
     if not (WORKSPACE / "lib" / "connect.py").exists():
         return ".dp/lib/ 缺失，请先运行 scripts/doctor.py"
     return None
@@ -86,7 +107,7 @@ def _run_script(script: str, port: str, timeout: int = 60) -> bool:
     tmp.write_text(script, encoding="utf-8")
     try:
         result = subprocess.run(
-            [str(_venv_python()), "-B", str(tmp), "--port", port],
+            [str(venv_python()), "-B", str(tmp), "--port", port],
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
             capture_output=True, text=True, encoding="utf-8",
             timeout=timeout,
@@ -104,6 +125,9 @@ def _run_script(script: str, port: str, timeout: int = 60) -> bool:
             stderr = e.stderr.decode("utf-8", "ignore") if isinstance(e.stderr, bytes) else e.stderr
             print(f"    [stderr] {stderr.strip()[:300]}")
         print(f"    [timeout] case 超时（>{timeout}s），已强制终止", file=sys.stderr)
+        return False
+    except (OSError, PermissionError) as e:
+        print(f"    [error] venv Python 不可执行：{e}", file=sys.stderr)
         return False
 
 
@@ -334,6 +358,56 @@ except Exception:
 '''
 
 
+def _script_login(base_url: str) -> str:
+    return _lib_loader() + f'''\
+try:
+    page.get("{base_url}/login.html")
+    page.wait.doc_loaded()
+    run = site_run_dir("{SITE}", "login")
+    native_input(page.ele("#username"), "smoke-user")
+    native_input(page.ele("#password"), "smoke-pass")
+    native_click(page.ele("#login-btn"))
+    page.wait(0.5)
+    screenshot(page, run / "result.png")
+    result_ele = page.ele("#login-result")
+    result_text = result_ele.text if result_ele else ""
+    assert "smoke-user" in result_text or "success" in result_text.lower(), f"登录结果未包含预期文字：{{result_text!r}}"
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
+'''
+
+
+def _lib_loader_session_page() -> str:
+    """SessionPage 专用 lib 加载（不需要浏览器连接）。"""
+    return f'''\
+import sys
+from pathlib import Path
+sys.path.insert(0, r"{WORKSPACE / 'lib'}")
+from output import site_run_dir
+from utils import save_json, mark_script_status
+from DrissionPage import SessionPage
+'''
+
+
+def _script_session_page(base_url: str) -> str:
+    return _lib_loader_session_page() + f'''\
+import json as _json
+try:
+    run = site_run_dir("{SITE}", "session-page")
+    page = SessionPage()
+    page.get("{base_url}/cookie-echo")
+    data = _json.loads(page.html)
+    assert isinstance(data, dict), f"响应不是 JSON dict: {{page.html[:200]!r}}"
+    save_json(data, run / "data.json")
+    mark_script_status("ok")
+except Exception:
+    mark_script_status("broken")
+    raise
+'''
+
+
 # ── Case 验证逻辑 ──────────────────────────────────────────────────────────────
 
 def _verify_screenshot() -> tuple[bool, str]:
@@ -397,10 +471,17 @@ def _verify_download() -> tuple[bool, str]:
     run = _latest_run_dir("download")
     if not run:
         return False, "run-dir 不存在"
-    files = list(run.iterdir())
-    if not files:
-        return False, "run-dir 为空，下载文件未落入"
-    return True, f"下载文件 → {files[0]}"
+    target = run / "smoke-test.txt"
+    if not target.exists():
+        files = list(run.iterdir())
+        return False, f"缺少 smoke-test.txt（run-dir 有：{[f.name for f in files]}）"
+    try:
+        content = target.read_text(encoding="utf-8")
+        if "dp smoke test file" not in content:
+            return False, f"smoke-test.txt 内容不符合预期：{content!r}"
+    except Exception as e:
+        return False, f"读取 smoke-test.txt 失败：{e}"
+    return True, f"smoke-test.txt OK（{len(content)} bytes）"
 
 
 def _verify_newtab() -> tuple[bool, str]:
@@ -429,6 +510,31 @@ def _verify_custom() -> tuple[bool, str]:
     return True, f"单一 run-dir，3 个输出文件 OK"
 
 
+def _verify_login() -> tuple[bool, str]:
+    run = _latest_run_dir("login")
+    if not run:
+        return False, "run-dir 不存在"
+    if not (run / "result.png").exists():
+        return False, "缺少 result.png"
+    return True, f"result.png OK → {run}"
+
+
+def _verify_session_page() -> tuple[bool, str]:
+    run = _latest_run_dir("session-page")
+    if not run:
+        return False, "run-dir 不存在"
+    data_file = run / "data.json"
+    if not data_file.exists():
+        return False, "缺少 data.json"
+    try:
+        data = json.loads(data_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False, f"data.json 不是 dict：{type(data)}"
+    except Exception as e:
+        return False, f"data.json 无效 JSON：{e}"
+    return True, f"SessionPage 响应已保存 → {data_file}"
+
+
 def _verify_web_page_sync() -> tuple[bool, str]:
     run = _latest_run_dir("web-page-sync")
     if not run:
@@ -447,7 +553,9 @@ def _verify_web_page_sync() -> tuple[bool, str]:
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 
-ALL_CASES = ["screenshot", "scrape", "form", "upload", "download", "newtab", "web-page-sync", "custom"]
+ALL_CASES = ["screenshot", "scrape", "form", "upload", "download", "newtab", "web-page-sync", "custom", "login", "session-page"]
+# session-page 使用 SessionPage()，不需要连接浏览器；其余 case 均需要浏览器
+BROWSER_REQUIRED_CASES = frozenset(ALL_CASES) - {"session-page"}
 
 
 def main() -> None:
@@ -463,26 +571,30 @@ def main() -> None:
         print(f"[dp smoke] {ws_issue}", file=sys.stderr)
         sys.exit(2)
 
-    if not _check_browser(args.port):
+    # 2. 计算 cases_to_run
+    cases_to_run = [args.case] if args.case else ALL_CASES
+
+    # 3. 按 case 判断是否需要浏览器
+    need_browser = any(c in BROWSER_REQUIRED_CASES for c in cases_to_run)
+    if need_browser and not _check_browser(args.port):
         print(f"[dp smoke] 无法连接到浏览器（端口 {args.port}）。", file=sys.stderr)
         print("[dp smoke] 请先运行 start-chrome-cdp.bat（或等效脚本）启动带调试端口的 Chrome。", file=sys.stderr)
         sys.exit(2)
 
-    # 2. 清理将要运行的 case 的历史产物，防止脚本失败时旧产物误报 PASS
+    # 4. 清理将要运行的 case 的历史产物，防止脚本失败时旧产物误报 PASS
     import shutil
-    cases_to_run = [args.case] if args.case else ALL_CASES
     for case in cases_to_run:
         case_dir = WORKSPACE / "projects" / SITE / "output" / case
         if case_dir.exists():
             shutil.rmtree(case_dir)
 
-    # 3. 启动 fixture server
+    # 5. 启动 fixture server
     base_url = f"http://127.0.0.1:{args.fixture_port}"
     server = _start_fixture_server(args.fixture_port)
     print(f"[dp smoke] fixture server @ {base_url}")
     time.sleep(0.3)  # 等 server 就绪
 
-    # 4. 准备 upload 测试文件
+    # 6. 准备 upload 测试文件
     upload_tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".txt", delete=False, encoding="utf-8"
     )
@@ -490,7 +602,7 @@ def main() -> None:
     upload_tmp.close()
     upload_file = upload_tmp.name
 
-    # 5. 运行 cases
+    # 7. 运行 cases
     scripts = {
         "screenshot":   lambda: _script_screenshot(base_url),
         "scrape":       lambda: _script_scrape(base_url),
@@ -500,6 +612,8 @@ def main() -> None:
         "newtab":       lambda: _script_newtab(base_url),
         "web-page-sync": lambda: _script_web_page_sync(base_url),
         "custom":       lambda: _script_custom(base_url),
+        "login":         lambda: _script_login(base_url),
+        "session-page":  lambda: _script_session_page(base_url),
     }
     verifiers = {
         "screenshot":   _verify_screenshot,
@@ -510,6 +624,8 @@ def main() -> None:
         "newtab":       _verify_newtab,
         "web-page-sync": _verify_web_page_sync,
         "custom":       _verify_custom,
+        "login":         _verify_login,
+        "session-page":  _verify_session_page,
     }
 
     results: list[tuple[str, bool, str]] = []
@@ -521,11 +637,11 @@ def main() -> None:
         results.append((case, status == "PASS", detail if ok else f"脚本{'OK' if script_ok else '失败'}，contract：{detail}"))
         print(f"  {status}  {detail if ok else detail}")
 
-    # 6. 清理
+    # 8. 清理
     server.shutdown()
     Path(upload_file).unlink(missing_ok=True)
 
-    # 7. 汇总
+    # 9. 汇总
     print("\n" + "=" * 44)
     passed = sum(1 for _, ok, _ in results if ok)
     for case, ok, detail in results:

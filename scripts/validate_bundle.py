@@ -30,6 +30,7 @@ REQUIRED_FILES = [
     "templates/connect.py",
     "templates/output.py",
     "templates/utils.py",
+    "templates/_dp_compat.py",
     "references/interface.md",
     "references/mode-selection.md",
     "references/workflows.md",
@@ -40,6 +41,7 @@ REQUIRED_FILES = [
     "evals/fixtures/upload.html",
     "evals/fixtures/download.html",
     "evals/fixtures/newtab.html",
+    "evals/fixtures/login.html",
 ]
 FORBIDDEN_TEXT_PATTERNS = [
     "CLAUDE_SKILL_DIR",
@@ -174,6 +176,7 @@ def validate_python(root: Path) -> None:
         "templates/connect.py",
         "templates/output.py",
         "templates/utils.py",
+        "templates/_dp_compat.py",
     ):
         path = root / rel
         source = path.read_text(encoding="utf-8")
@@ -242,7 +245,7 @@ def validate_cross_file_consistency(root: Path) -> None:
         fail("references/workflows.md 未使用 upload_file()")
     if "download_file" not in workflows:
         fail("references/workflows.md 未使用 download_file()")
-    for field in ("intent:", "url:", "tags:", "last_run:", "status:"):
+    for field in ("site:", "task:", "created:", "updated:", "intent:", "url:", "tags:", "last_run:", "status:"):
         if field not in workflows:
             fail(f"references/workflows.md 通用脚本头缺少字段: {field}")
     if "mark_script_status" not in workflows:

@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -123,10 +124,18 @@ def find_python() -> str:
 
 
 def venv_python() -> Path:
-    """返回 venv 中的 Python 路径（跨平台）。"""
-    win = VENV / "Scripts" / "python.exe"
-    unix = VENV / "bin" / "python"
-    return win if win.exists() else unix
+    """按宿主 OS 优先返回 venv Python 路径。
+
+    Windows 宿主优先 Scripts/python.exe；非 Windows（Linux/WSL/macOS）优先 bin/python。
+    这样在 WSL 接管 Windows venv 时不会选到不可执行的 .exe。
+    """
+    if os.name == "nt":
+        preferred = VENV / "Scripts" / "python.exe"
+        fallback = VENV / "bin" / "python"
+    else:
+        preferred = VENV / "bin" / "python"
+        fallback = VENV / "Scripts" / "python.exe"
+    return preferred if preferred.exists() else fallback
 
 
 def is_drissionpage_source(cwd: Path | None = None) -> bool:
@@ -205,8 +214,12 @@ def install_drissionpage(use_uv: bool) -> bool:
         print("[dp] 检测到 DrissionPage 源码，执行可编辑安装...")
         pkg_args = ["-e", "."]
     else:
-        print("[dp] 从 PyPI 安装 DrissionPage...")
-        pkg_args = ["DrissionPage"]
+        # 已验证版本范围：>=4.1.1,<4.2（本地实测 4.1.1.2）
+        # 本 skill 依赖 DrissionPage 私有 API（_browser, _download_path, _run_cdp 等）。
+        # 版本范围收紧是为了防止上游小版本重构时私有 API 静默失效。
+        # 若需升级，请先检查 templates/_dp_compat.py 中各函数的注释。
+        print("[dp] 从 PyPI 安装 DrissionPage（已验证范围 >=4.1.1,<4.2）...")
+        pkg_args = ["DrissionPage>=4.1.1,<4.2"]
 
     if use_uv:
         cmd = ["uv", "pip", "install", "--python", str(VENV)] + pkg_args
@@ -257,7 +270,7 @@ def check() -> list[str]:
         except Exception as e:
             issues.append(f".dp/.venv/ 检测失败：{e}")
 
-    for name in ("connect.py", "output.py", "utils.py"):
+    for name in ("connect.py", "output.py", "utils.py", "_dp_compat.py"):
         if not (LIB / name).exists():
             issues.append(f".dp/lib/{name} 缺失")
 
@@ -335,7 +348,7 @@ def init(force: bool = False) -> bool:
 
     # 4. lib 模板文件（始终覆盖，确保与当前 bundle 版本一致）
     (LIB / "__init__.py").touch(exist_ok=True)
-    for name in ("connect.py", "output.py", "utils.py"):
+    for name in ("connect.py", "output.py", "utils.py", "_dp_compat.py"):
         src, dst = TEMPLATES / name, LIB / name
         if src.exists():
             shutil.copy2(src, dst)

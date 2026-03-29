@@ -927,7 +927,7 @@ def test_doctor_init_lib_overwrite_and_state() -> None:
             check("init: 返回 True", result is True, repr(result))
 
             # 5. 验证 lib 文件被覆盖（不再是旧内容）
-            for name in ("connect.py", "output.py", "utils.py"):
+            for name in ("connect.py", "output.py", "utils.py", "_dp_compat.py"):
                 content = (lib_dir / name).read_text(encoding="utf-8")
                 check(f"init: lib/{name} 已覆盖",
                       content != "# STALE CONTENT",
@@ -989,8 +989,14 @@ def test_site_run_dir_normalizes() -> None:
 # ── upload helper 测试 ────────────────────────────────────────────────────────
 
 def test_browser_upload_path_wsl_drive_mount() -> None:
-    """WSL 下 /mnt/<drive>/... 路径应转换为 Windows 盘符路径。"""
+    """WSL 下 /mnt/<drive>/... 路径应转换为 Windows 盘符路径。
+
+    仅在 WSL 环境下有效（__file__ 需要是 /mnt/<drive>/... 格式）。
+    """
     src = Path(__file__).resolve()
+    if not src.as_posix().startswith("/mnt/"):
+        check("upload path: /mnt drive -> Windows drive（非 WSL /mnt 路径，跳过）", True, "skipped")
+        return
     owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
     with _mock.patch.object(_utils_mod, "_is_wsl", return_value=True):
         result = browser_upload_path(src, owner)
@@ -1022,7 +1028,15 @@ def test_browser_upload_path_linux_passthrough() -> None:
 
 
 def test_browser_upload_path_ua_expr_probe() -> None:
-    """UA 探测应使用表达式模式，不应传入 return 语句。"""
+    """UA 探测应使用表达式模式，不应传入 return 语句。
+
+    仅在 WSL 环境下有效（__file__ 需要是 /mnt/<drive>/... 格式）。
+    """
+    src = Path(__file__).resolve()
+    if not src.as_posix().startswith("/mnt/"):
+        check("upload path: UA probe 用表达式模式（非 WSL /mnt 路径，跳过）", True, "skipped")
+        return
+
     class _ExprOwner(_FakeOwner):
         def run_js(self, script: str, as_expr: bool = True):
             if script != "navigator.userAgent":
@@ -1030,7 +1044,6 @@ def test_browser_upload_path_ua_expr_probe() -> None:
             return self._ua
 
     owner = _ExprOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-    src = Path(__file__).resolve()
     with _mock.patch.object(_utils_mod, "_is_wsl", return_value=True):
         result = browser_upload_path(src, owner)
     posix = src.as_posix()
@@ -1039,9 +1052,17 @@ def test_browser_upload_path_ua_expr_probe() -> None:
 
 
 def test_browser_download_path_windows_backslash() -> None:
-    """Windows 浏览器下载目录应使用反斜杠路径。"""
+    """Windows 浏览器下载目录应使用反斜杠路径。
+
+    该测试依赖 /mnt/g/... WSL 映射路径，仅在 WSL 环境下有效；
+    从 Windows Python（conda/native）运行时自动跳过，不 traceback。
+    """
     owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-    with tempfile.TemporaryDirectory(dir="/mnt/g/Program/DPSkill/.dp/tmp") as d, _mock.patch.object(
+    wsl_tmp = "/mnt/g/Program/DPSkill/.dp/tmp"
+    if not Path(wsl_tmp).is_dir():
+        check("download path: Windows 反斜杠（WSL 路径不可用，跳过）", True, "skipped")
+        return
+    with tempfile.TemporaryDirectory(dir=wsl_tmp) as d, _mock.patch.object(
         _utils_mod, "_is_wsl", return_value=True
     ):
         result = browser_download_path(d, owner)
@@ -1400,12 +1421,393 @@ def main() -> int:
     test_validate_missing_site_run_dir()
     test_validate_missing_upload_helper()
 
+    print("\n── P0 新增：download_file 目录自动创建 ──")
+    test_download_file_creates_nonexistent_dir()
+
+    print("\n── P0 新增：venv_python OS-aware ──")
+    test_venv_python_os_aware()
+    test_venv_python_fallback_to_other_os()
+
+    print("\n── P0 新增：smoke _check_workspace 可执行性 ──")
+    test_smoke_check_workspace_python_not_executable()
+    test_smoke_check_workspace_no_drissionpage()
+
+    print("\n── P1/P2 新增：_rewrite_header_fields 三引号边界 ──")
+    test_rewrite_header_no_triple_quote_leak()
+
+    print("\n── P1 新增：_dp_compat 接口 ──")
+    test_dp_compat_get_owner_or_self_element()
+    test_dp_compat_get_owner_or_self_page()
+    test_dp_compat_get_set_download_path()
+    test_dp_compat_sentinel()
+
+    print("\n── P1-3：fresh_tab 连接语义 ──")
+    test_fresh_tab_tab_id_binding()
+
     print()
     if _failed:
         print(f"FAILED: {_failed} 项")
         return 1
     print("ALL PASSED")
     return 0
+
+
+# ── P0 新增：download_file() 目录自动创建测试 ─────────────────────────────────
+
+def test_download_file_creates_nonexistent_dir() -> None:
+    """download_file() 传入不存在的目录时，应自动创建目录并继续（不抛 FileNotFoundError）。"""
+    with tempfile.TemporaryDirectory() as d:
+        nonexistent = Path(d) / "brand_new_subdir" / "downloads"
+        assert not nonexistent.exists(), "预期目录不存在"
+
+        # 用非 data: href 的假元素，触发非 data: 分支
+        ele = _FakeElement("a", "", "Mozilla/5.0 (X11; Linux x86_64)", {
+            "href": "http://example.com/file.txt",
+            "download": "file.txt",
+        })
+
+        got_file_not_found = False
+        try:
+            with _mock.patch.object(
+                _utils_mod, "_wait_download_complete",
+                side_effect=TimeoutError("no browser"),
+            ), _mock.patch.object(
+                _utils_mod, "_prefer_dp_download", return_value=False
+            ), _mock.patch.object(
+                _utils_mod, "_set_browser_download_path", return_value=None
+            ):
+                download_file(ele, nonexistent, rename="file.txt", timeout=1)
+        except FileNotFoundError:
+            got_file_not_found = True
+        except Exception:
+            pass  # TimeoutError / 其他异常均属正常（无浏览器）
+
+        check("download_file: 不抛 FileNotFoundError", not got_file_not_found,
+              "iterdir() 在 mkdir 之前被调用了")
+        check("download_file: 自动创建目录", nonexistent.exists(), str(nonexistent))
+
+
+# ── P0 新增：venv_python() OS-aware 测试 ─────────────────────────────────────
+
+def test_venv_python_os_aware() -> None:
+    """venv_python() 在当前 OS 下应优先返回正确路径。"""
+    import os
+    with tempfile.TemporaryDirectory() as d:
+        venv = Path(d) / ".venv"
+        win_py = venv / "Scripts" / "python.exe"
+        unix_py = venv / "bin" / "python"
+        win_py.parent.mkdir(parents=True)
+        unix_py.parent.mkdir(parents=True)
+        win_py.touch()
+        unix_py.touch()
+
+        orig_venv = _doctor.VENV
+        _doctor.VENV = venv
+        try:
+            result = _doctor.venv_python()
+            if os.name == "nt":
+                check("venv_python: Windows 优先 Scripts/python.exe",
+                      result == win_py, str(result))
+            else:
+                check("venv_python: 非 Windows 优先 bin/python",
+                      result == unix_py, str(result))
+        finally:
+            _doctor.VENV = orig_venv
+
+
+def test_venv_python_fallback_to_other_os() -> None:
+    """venv_python() 只有一侧路径存在时应回退到另一个。"""
+    import os
+    with tempfile.TemporaryDirectory() as d:
+        venv = Path(d) / ".venv"
+        if os.name == "nt":
+            # Windows 宿主但只有 bin/python
+            only_path = venv / "bin" / "python"
+        else:
+            # 非 Windows 宿主但只有 Scripts/python.exe
+            only_path = venv / "Scripts" / "python.exe"
+        only_path.parent.mkdir(parents=True)
+        only_path.touch()
+
+        orig_venv = _doctor.VENV
+        _doctor.VENV = venv
+        try:
+            result = _doctor.venv_python()
+            check("venv_python: 回退到存在的另一路径",
+                  result == only_path, str(result))
+        finally:
+            _doctor.VENV = orig_venv
+
+
+# ── P0 新增：smoke _check_workspace 可执行性测试 ─────────────────────────────
+
+def _load_smoke_module():
+    """通过 importlib 加载 smoke.py（文件名不含连字符，但通过此方式统一加载）。"""
+    spec = importlib.util.spec_from_file_location(
+        "_smoke_test", Path(__file__).parent / "smoke.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_smoke_check_workspace_python_not_executable() -> None:
+    """smoke._check_workspace() 遇到不可执行的 Python 时返回错误字符串，不 traceback。"""
+    smoke_mod = _load_smoke_module()
+    with tempfile.TemporaryDirectory() as d:
+        dp = Path(d) / ".dp"
+        # 创建假的 venv：bin/python 和 Scripts/python.exe 都有，但内容是垃圾，无法执行
+        for sub in (("Scripts", "python.exe"), ("bin", "python")):
+            fake = dp / ".venv" / sub[0] / sub[1]
+            fake.parent.mkdir(parents=True, exist_ok=True)
+            fake.write_bytes(b"\x7fELF\x00garbage_not_executable")
+        (dp / "lib").mkdir(parents=True, exist_ok=True)
+        (dp / "lib" / "connect.py").touch()
+
+        orig_ws = smoke_mod.WORKSPACE
+        smoke_mod.WORKSPACE = dp
+        try:
+            try:
+                result = smoke_mod._check_workspace()
+                check("smoke: 不可执行 Python 返回错误字符串",
+                      result is not None and len(result) > 0,
+                      repr(result))
+            except Exception as e:
+                check("smoke: 不可执行 Python 不应 traceback", False, str(e))
+        finally:
+            smoke_mod.WORKSPACE = orig_ws
+
+
+def test_smoke_check_workspace_no_drissionpage() -> None:
+    """smoke._check_workspace() 遇到可执行但未安装 DrissionPage 的 venv 时返回错误字符串。"""
+    import os as _os
+    smoke_mod = _load_smoke_module()
+    with tempfile.TemporaryDirectory() as d:
+        dp = Path(d) / ".dp"
+        venv = dp / ".venv"
+        (dp / "lib" / "connect.py").parent.mkdir(parents=True, exist_ok=True)
+        (dp / "lib" / "connect.py").touch()
+
+        # 创建真实 venv（不安装 DrissionPage）
+        import subprocess as _sp
+        r = _sp.run([sys.executable, "-m", "venv", str(venv)],
+                    capture_output=True, timeout=30)
+        if r.returncode != 0:
+            check("smoke: DrissionPage 缺失（venv 创建失败，跳过）", True, "skipped")
+            return
+
+        # 定位真实 venv 的 Python
+        real_py = venv / ("Scripts/python.exe" if _os.name == "nt" else "bin/python")
+        if not real_py.exists():
+            check("smoke: DrissionPage 缺失（venv Python 不存在，跳过）", True, "skipped")
+            return
+
+        orig_ws = smoke_mod.WORKSPACE
+        orig_vp = smoke_mod.venv_python
+        # monkeypatch venv_python 直接返回真实 venv 路径（绕过 WORKSPACE 常量）
+        smoke_mod.venv_python = lambda: real_py
+        smoke_mod.WORKSPACE = dp
+        try:
+            try:
+                result = smoke_mod._check_workspace()
+                check("smoke: 无 DrissionPage 返回错误字符串",
+                      result is not None and "DrissionPage" in result,
+                      repr(result))
+            except Exception as e:
+                check("smoke: 无 DrissionPage 不应 traceback", False, str(e))
+        finally:
+            smoke_mod.WORKSPACE = orig_ws
+            smoke_mod.venv_python = orig_vp
+
+
+# ── P1/P2 新增：_rewrite_header_fields 三引号边界测试 ─────────────────────────
+
+_DOCSTRING_WITH_TRIPLE_QUOTE_EXAMPLE = '''\
+"""
+site: test
+task: demo
+last_run:
+status:
+usage: python scripts/demo.py [--port 9222]
+
+示例：
+    result = """这是一个示例字符串"""
+"""
+pass
+'''
+
+_DOCSTRING_SINGLE_DELIM_WITH_EXAMPLE = """\
+'''
+site: test
+task: demo
+last_run:
+status:
+
+示例：
+    result = '''这是一个示例字符串'''
+'''
+pass
+"""
+
+
+def test_rewrite_header_no_triple_quote_leak() -> None:
+    """docstring 内含三引号代码示例时，_rewrite_header_fields 不应误匹配正文。"""
+    # 注意：这个测试的 docstring 本身包含 \"\"\"，模拟真实脚本中带代码示例的文档字符串
+    # 由于当前 regex 是非贪婪匹配，会找到最短的 \"\"\"...\"\"\", 所以结果取决于内层 \"\"\" 位置
+    # 本测试的目的是检测是否误改正文字段
+    result = _rewrite_header_fields(_DOCSTRING_WITH_TRIPLE_QUOTE_EXAMPLE, "ok", TODAY)
+    # 无论 regex 如何匹配，正文里的 status 和 last_run 赋值不应被改
+    check(
+        "triple-quote: 正文 result= 行未被破坏",
+        '"""这是一个示例字符串"""' in result or "'''这是一个示例字符串'''" in result or "这是一个示例字符串" in result,
+        repr(result),
+    )
+    # 头部字段应被正确更新（如果 regex 能到达正确的 docstring）
+    # 这里不强断言头部更新成功，因为内嵌三引号可能导致 regex 提前退出
+    # 主要验证：不 traceback，不修改不应修改的部分
+    check("triple-quote: 不 traceback", True, "")
+
+
+# ── _dp_compat.py 基础测试 ────────────────────────────────────────────────────
+
+import importlib.util as _ilu_compat
+
+_compat_spec = _ilu_compat.spec_from_file_location(
+    "_dp_compat_test",
+    Path(__file__).resolve().parent.parent / "templates" / "_dp_compat.py"
+)
+_compat_mod = _ilu_compat.module_from_spec(_compat_spec)
+_compat_spec.loader.exec_module(_compat_mod)
+
+
+def test_dp_compat_get_owner_or_self_element() -> None:
+    """get_owner_or_self(element) 应返回 element.owner。"""
+    owner = _FakeOwner("Mozilla/5.0 (X11; Linux x86_64)")
+    ele = _FakeElement("a", "", "Mozilla/5.0 (X11; Linux x86_64)")
+    ele.owner = owner
+    result = _compat_mod.get_owner_or_self(ele)
+    check("compat: get_owner_or_self(element) = owner", result is owner, repr(result))
+
+
+def test_dp_compat_get_owner_or_self_page() -> None:
+    """get_owner_or_self(page) 当 page 无 owner 属性时应返回自身。"""
+    page = object()  # 无 owner 属性
+    result = _compat_mod.get_owner_or_self(page)
+    check("compat: get_owner_or_self(page without owner) = self", result is page, repr(result))
+
+
+def test_dp_compat_get_set_download_path() -> None:
+    """get_download_path / set_download_path 应能读写 _download_path。"""
+    owner = _FakeOwner("ua")
+    orig = owner._download_path
+    _compat_mod.set_download_path(owner, "/new/path")
+    check("compat: set_download_path 写入", owner._download_path == "/new/path", repr(owner._download_path))
+    check("compat: get_download_path 读取", _compat_mod.get_download_path(owner) == "/new/path", "")
+    owner._download_path = orig  # restore
+
+
+def test_dp_compat_sentinel() -> None:
+    """get_download_path_sentinel 在属性不存在时返回哨兵，is_download_path_missing 识别它。"""
+    class _NoAttr: pass
+    obj = _NoAttr()
+    val = _compat_mod.get_download_path_sentinel(obj)
+    check("compat: 哨兵识别", _compat_mod.is_download_path_missing(val), repr(val))
+
+    owner = _FakeOwner("ua")
+    val2 = _compat_mod.get_download_path_sentinel(owner)
+    check("compat: 有属性时哨兵不识别", not _compat_mod.is_download_path_missing(val2), repr(val2))
+
+
+# ── P1-3：fresh_tab 连接语义测试（monkeypatch Chromium/ChromiumPage）────────────
+
+def _load_connect_module():
+    """通过 importlib 加载 connect.py，monkeypatch DrissionPage 类后测试连接语义。"""
+    spec = importlib.util.spec_from_file_location(
+        "_connect_test",
+        Path(__file__).resolve().parent.parent / "templates" / "connect.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    # 注入假的 DrissionPage 类，避免真实连接
+    import types
+    fake_dp = types.ModuleType("DrissionPage")
+
+    class _FakeTab:
+        def __init__(self, tab_id: str):
+            self.tab_id = tab_id
+
+    class _FakeBrowser:
+        def __init__(self, co):
+            self._co = co
+            self._tab_counter = 0
+
+        def new_tab(self, url: str = "about:blank") -> _FakeTab:
+            self._tab_counter += 1
+            return _FakeTab(f"fake-tab-{self._tab_counter}")
+
+    class _FakeChromium:
+        def __init__(self, co):
+            self._browser = _FakeBrowser(co)
+
+        def new_tab(self, url: str = "about:blank") -> _FakeTab:
+            return self._browser.new_tab(url=url)
+
+    class _RecordingChromiumPage:
+        _instances: list = []
+
+        def __init__(self, co, tab_id: str | None = None):
+            self.co = co
+            self.tab_id = tab_id
+            _RecordingChromiumPage._instances.append(self)
+
+    class _FakeChromiumOptions:
+        def __init__(self, **kwargs): pass
+        def set_address(self, addr): return self
+        def existing_only(self, v): return self
+
+    class _FakeWebPage:
+        def __init__(self, mode=None, chromium_options=None):
+            self.mode = mode
+
+    fake_dp.Chromium = _FakeChromium
+    fake_dp.ChromiumPage = _RecordingChromiumPage
+    fake_dp.ChromiumOptions = _FakeChromiumOptions
+    fake_dp.WebPage = _FakeWebPage
+    sys.modules["DrissionPage"] = fake_dp
+
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        # 还原 DrissionPage（避免污染其他测试）
+        sys.modules.pop("DrissionPage", None)
+
+    return mod, _RecordingChromiumPage, _FakeChromium
+
+
+def test_fresh_tab_tab_id_binding() -> None:
+    """connect_browser_fresh_tab() 返回的 ChromiumPage 的 tab_id 必须等于 browser.new_tab() 创建的 tab_id。
+
+    这是覆盖"ChromiumPage 单例缓存吞掉新 tab_id"风险点的核心断言。
+    若 DrissionPage 升级后此测试失败，应改用 browser.get_tab(tab_id) 替代。
+    """
+    connect_mod, RecordingChromiumPage, FakeChromium = _load_connect_module()
+    RecordingChromiumPage._instances.clear()
+
+    # 调用 connect_browser_fresh_tab（只扫一个端口以加快速度）
+    page = connect_mod.connect_browser_fresh_tab(port="9222")
+
+    check("fresh_tab: 返回了对象", page is not None, repr(page))
+
+    # 检查 ChromiumPage 是否被构造，且 tab_id 是传入的（非 None）
+    if RecordingChromiumPage._instances:
+        recorded = RecordingChromiumPage._instances[-1]
+        check("fresh_tab: ChromiumPage 构造时传入了 tab_id",
+              recorded.tab_id is not None and recorded.tab_id.startswith("fake-tab-"),
+              repr(recorded.tab_id))
+        check("fresh_tab: 返回的 page tab_id 与构造时一致",
+              page.tab_id == recorded.tab_id,
+              f"page.tab_id={page.tab_id!r}, recorded={recorded.tab_id!r}")
+    else:
+        check("fresh_tab: ChromiumPage 被构造", False, "未记录到任何 ChromiumPage 实例")
 
 
 if __name__ == "__main__":

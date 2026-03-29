@@ -5,8 +5,8 @@ description: >
 compatibility: >
   需要宿主客户端能够读取此 skill、运行本地 Python 与 shell 命令、读取 bundled scripts/references，并在目标工作区写文件。默认假设 Python 3.10+、可写文件系统、以及可连接本地 Chromium 远程调试端口的环境。
 metadata:
-  bundle-version: "2026-03-28.12"
-  runtime-lib-version: "2026-03-28.9"
+  bundle-version: "2026-03-29.1"
+  runtime-lib-version: "2026-03-29.1"
 ---
 
 # 浏览器自动化
@@ -39,6 +39,7 @@ metadata:
 **需要运行 preflight 的情况**：
 - `.dp/` 不存在、`.dp/.venv/` 缺失、`.dp/lib/` 缺失
 - `.dp/state.json` 不存在或版本不一致
+- `.dp/state.json` 损坏（无法解析）：视同工作区需要重新初始化，操作与"版本不一致"相同
 - 任务执行时出现明确的环境错误
 - 用户显式要求修复
 
@@ -122,6 +123,14 @@ hostname 推导规则（由 `normalize_site_name()` 实现）：
 **三级匹配的设计意图**：`site+intent` 和 `url` 是强信号，客户端应直接复用；
 `task` 是有意保留给 Agent 的**语义判断层**，低置信度时不要强复用——
 优先生成临时脚本，或先读旧脚本再改，而不是盲目套用。
+
+**边界示例**：
+
+| 场景 | 判断 | 推荐操作 |
+|---|---|---|
+| site=hn，intent=scrape，已有 `scrape-top.py`，新任务同样是抓 HN 榜单 | site+intent 精确匹配 | 直接复用，无需询问 |
+| site=hn，intent=scrape，已有 `scrape-top.py`，新任务是抓评论区 | url 前缀不同（`/item?id=...` vs `/`） | url 不匹配，生成新脚本 |
+| site=hn，已有多个脚本，新任务描述与 task 字段语义相近但不精确 | task 语义低置信度 | 优先生成临时脚本，或先读旧脚本再改，不要盲目套用 |
 
 ### 6. 生成并执行
 

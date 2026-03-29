@@ -55,19 +55,33 @@
 - 同一次任务只有一个 run dir
 - 下载文件保存到当前 run dir，文件名优先语义名
 
-## 9. 新标签页场景检查
+## 9. 登录场景检查（login）
+
+- 登录前先检查是否已有有效 session，避免重复登录
+- 输入账号密码使用原生输入，不直接操作 `value`
+- 登录后等待页面跳转或登录态标志出现，再继续后续操作
+- 登录态 cookies 持久化到 `.dp/projects/<site>/` 供后续复用
+
+## 10. 纯请求场景检查（session-page）
+
+- `SessionPage` 不依赖浏览器连接，可单独运行，无需调试端口
+- 适用场景：已有 cookies / token、纯 API 抓取、无需 JS 渲染
+- Headers 和 cookies 可从 `ChromiumPage` 导入，或手动构造
+- 不要在需要 JS 渲染或真实点击的场景错误使用 `SessionPage`
+
+## 11. 新标签页场景检查
 
 - 使用 `click.for_new_tab()` 或 `wait.new_tab()` 切换
 - 标签页切换不创建新 run dir
 - 同一任务所有输出归到同一 run dir
 
-## 10. Custom 多步场景检查
+## 12. Custom 多步场景检查
 
 - 仍遵守原生交互优先、保守节奏
 - 多步骤产生的所有输出落入同一 run dir
 - 文件名使用语义名称区分不同步骤
 
-## 11. 源码 smoke vs 安装副本 smoke
+## 13. 源码 smoke vs 安装副本 smoke
 
 ### 源码 smoke（日常开发验证）
 
@@ -78,7 +92,7 @@ python <skill-root>/scripts/smoke.py --port 9222
 ```
 
 - 验证 run-dir contract（路径、文件语义名、上传输入不进 run-dir 等）
-- 验证 8 个 case 全部 PASS
+- 验证 10 个 case 全部 PASS
 
 ### 安装副本 smoke（发布前验证）
 

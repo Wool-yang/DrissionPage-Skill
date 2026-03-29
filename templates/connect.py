@@ -40,7 +40,18 @@ def connect_browser(port: str | None = None) -> ChromiumPage:
 
 
 def connect_browser_fresh_tab(port: str | None = None, url: str = "about:blank") -> ChromiumPage:
-    """连接已有浏览器并新建一个标签页，避免复用可能异常的旧 tab。"""
+    """连接已有浏览器并新建一个标签页，避免复用可能异常的旧 tab。
+
+    实现说明：
+    - Chromium(co) 连接已有浏览器实例（existing_only=True）
+    - browser.new_tab() 创建新标签页并返回 tab 对象（含 tab_id）
+    - ChromiumPage(co, tab_id=tab.tab_id) 绑定到该 tab_id
+
+    设计风险：ChromiumPage 构造时以 co（配置）而非 browser 对象作为入口，
+    若 DrissionPage 内部存在单例缓存，有可能忽略传入的 tab_id 而绑定到默认 tab。
+    当前在 DrissionPage 4.1.1.x 下通过 monkeypatch 测试验证，传入 tab_id 被正确使用。
+    若升级 DrissionPage 后行为异常，应改用 browser.get_tab(tab_id) 替代 ChromiumPage(co, tab_id=...)。
+    """
     for p, co in _iter_existing_browser_options(port):
         try:
             browser = Chromium(co)

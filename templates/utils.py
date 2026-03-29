@@ -13,11 +13,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import unquote_to_bytes, urlparse
 
+from _dp_compat import (
+    get_browser_from_page,
+    get_download_path,
+    get_download_path_sentinel,
+    get_owner_or_self,
+    is_download_path_missing,
+    run_browser_cdp,
+    set_download_path,
+)
+
 if TYPE_CHECKING:
     from DrissionPage import ChromiumPage
     from DrissionPage._elements.chromium_element import ChromiumElement
-
-_MISSING = object()  # 哨兵：区分"属性不存在"与"属性值为 None"
 
 
 def _is_wsl() -> bool:
@@ -37,7 +45,7 @@ def _is_wsl() -> bool:
 
 def _browser_os_name(obj) -> str:
     """从当前浏览器 UA 推断浏览器所在 OS。"""
-    page = getattr(obj, "owner", obj)
+    page = get_owner_or_self(obj)
     ua = ""
     try:
         ua = page.run_js("navigator.userAgent", as_expr=True) or ""
@@ -258,13 +266,14 @@ def upload_file(ele: ChromiumElement, file_path: str | Path, timeout: int = 10) 
 def _set_browser_download_path(ele: ChromiumElement, browser_path: str, new_tab: bool | None = None) -> None:
     """
     直接设置浏览器下载目录，绕过 DrissionPage 在 WSL 下对路径的本地二次 Path() 处理。
+    私有 API 访问已隔离到 _dp_compat.py。
     """
-    owner = ele.owner
-    browser = owner._browser
-    browser._download_path = browser_path
-    if hasattr(owner, "_download_path"):
-        owner._download_path = browser_path
-    browser._run_cdp(
+    owner = get_owner_or_self(ele)
+    browser = get_browser_from_page(owner)
+    set_download_path(browser, browser_path)
+    set_download_path(owner, browser_path)
+    run_browser_cdp(
+        browser,
         "Browser.setDownloadBehavior",
         downloadPath=browser_path,
         behavior="allow",
@@ -333,6 +342,7 @@ def download_file(
         print(f"[dp] download strategy=data-url target={final_path}")
         return final_path
 
+    local_dir.mkdir(parents=True, exist_ok=True)
     known_names = {p.name for p in local_dir.iterdir()}
     timeout = 30 if timeout is None else timeout
     browser_os = _browser_os_name(ele)
@@ -367,10 +377,10 @@ def download_file(
 
     browser_path = browser_download_path(save_path, ele)
     print(f"[dp] download strategy=raw-cdp browser_path={browser_path}")
-    _owner = ele.owner
-    _browser = _owner._browser
-    _orig_browser_path = getattr(_browser, "_download_path", None)
-    _orig_owner_path = getattr(_owner, "_download_path", _MISSING)
+    _owner = get_owner_or_self(ele)
+    _browser = get_browser_from_page(_owner)
+    _orig_browser_path = get_download_path(_browser)
+    _orig_owner_path = get_download_path_sentinel(_owner)
     try:
         _set_browser_download_path(ele, browser_path, new_tab=new_tab)
         native_click(ele, timeout=max(10, int(timeout)))
@@ -379,11 +389,12 @@ def download_file(
     finally:
         # 恢复浏览器原始下载目录，避免持久污染用户会话
         if _orig_browser_path is not None:
-            _browser._download_path = _orig_browser_path
-            if _orig_owner_path is not _MISSING:
-                _owner._download_path = _orig_owner_path
+            set_download_path(_browser, _orig_browser_path)
+            if not is_download_path_missing(_orig_owner_path):
+                set_download_path(_owner, _orig_owner_path)
             try:
-                _browser._run_cdp(
+                run_browser_cdp(
+                    _browser,
                     "Browser.setDownloadBehavior",
                     downloadPath=_orig_browser_path,
                     behavior="allow",

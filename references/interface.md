@@ -1,3 +1,7 @@
+> **适配版本**：本文档已在 DrissionPage **4.1.1.x**（当前实测 4.1.1.2）下验证。
+> 若使用更高版本，请先检查 `templates/_dp_compat.py` 中标注"依赖 DrissionPage 私有实现"的函数是否仍然有效。
+> 私有 API（`_browser`、`_download_path`、`_run_cdp` 等）在非 major 版本间有静默变动风险。
+
 # DrissionPage 接口速查
 
 ## 目录
