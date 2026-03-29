@@ -1784,10 +1784,11 @@ def _load_connect_module():
 
 
 def test_fresh_tab_tab_id_binding() -> None:
-    """connect_browser_fresh_tab() 返回的 ChromiumPage 的 tab_id 必须等于 browser.new_tab() 创建的 tab_id。
+    """验证 connect_browser_fresh_tab() 构造 ChromiumPage 时正确传入了 tab_id。
 
-    这是覆盖"ChromiumPage 单例缓存吞掉新 tab_id"风险点的核心断言。
-    若 DrissionPage 升级后此测试失败，应改用 browser.get_tab(tab_id) 替代。
+    覆盖范围：本测试通过 monkeypatch 证明 tab_id 参数被传入 ChromiumPage 构造函数。
+    未覆盖：DrissionPage 内部是否有单例缓存会在运行时忽略此 tab_id——
+    该行为只能在真实浏览器连接下才能观测到，属于端到端 smoke 的责任范围。
     """
     connect_mod, RecordingChromiumPage, FakeChromium = _load_connect_module()
     RecordingChromiumPage._instances.clear()

@@ -49,8 +49,15 @@ def connect_browser_fresh_tab(port: str | None = None, url: str = "about:blank")
 
     设计风险：ChromiumPage 构造时以 co（配置）而非 browser 对象作为入口，
     若 DrissionPage 内部存在单例缓存，有可能忽略传入的 tab_id 而绑定到默认 tab。
-    当前在 DrissionPage 4.1.1.x 下通过 monkeypatch 测试验证，传入 tab_id 被正确使用。
-    若升级 DrissionPage 后行为异常，应改用 browser.get_tab(tab_id) 替代 ChromiumPage(co, tab_id=...)。
+
+    当前测试覆盖范围（test_helpers.py::test_fresh_tab_tab_id_binding）：
+    - 通过 monkeypatch 验证了 ChromiumPage 构造时 tab_id 参数被正确传入
+    - 未覆盖：DrissionPage 内部是否有单例缓存会在运行时忽略此 tab_id
+      （该行为只能在真实浏览器连接下才能观测到）
+
+    升级 DrissionPage 后若行为异常，可考虑改用 browser.get_tab(tab_id)，
+    但注意：在 DrissionPage 4.1.1.x 中 Chromium.get_tab() 返回 MixTab，
+    不是 ChromiumPage，需要调整调用方代码的类型期望。
     """
     for p, co in _iter_existing_browser_options(port):
         try:

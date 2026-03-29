@@ -76,8 +76,11 @@ def _check_workspace() -> str | None:
         return f".dp/.venv/ DrissionPage 检测失败：{e}"
     except subprocess.TimeoutExpired:
         return ".dp/.venv/ DrissionPage 导入超时"
-    if not (WORKSPACE / "lib" / "connect.py").exists():
-        return ".dp/lib/ 缺失，请先运行 scripts/doctor.py"
+    # 与 doctor.py check() 保持一致：验证全部 lib 文件都已就绪
+    # utils.py 依赖 _dp_compat.py，旧工作区或部分损坏时会在子脚本里才暴露错误
+    for _lib_name in ("connect.py", "output.py", "utils.py", "_dp_compat.py"):
+        if not (WORKSPACE / "lib" / _lib_name).exists():
+            return f".dp/lib/{_lib_name} 缺失，请重新运行 scripts/doctor.py"
     return None
 
 
