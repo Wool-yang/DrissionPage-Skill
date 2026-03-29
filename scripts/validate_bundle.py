@@ -185,18 +185,20 @@ def validate_python(root: Path) -> None:
 
 def validate_rule_markers(root: Path) -> None:
     skill = (root / "SKILL.md").read_text(encoding="utf-8")
+    # 稳定 contract token / 导航锚点：保持硬检查
     if "站点 README 规则" not in skill:
         fail("SKILL.md 缺少站点 README 规则")
-    if "默认远程调试端口是 `9222`" not in skill:
-        fail("SKILL.md 缺少默认端口规则")
-    if "scripts/list-scripts.py --root <project-root>" not in skill:
-        fail("SKILL.md 缺少 list-scripts 显式根路径说明")
     if "runtime_lib_version" not in skill:
         fail("SKILL.md 缺少 runtime_lib_version preflight 描述")
     if "bundle_version" not in skill:
         fail("SKILL.md 缺少 bundle_version preflight 描述")
-    if "当前会话工作区 cwd 作为工作区根" not in skill:
-        fail("SKILL.md 缺少工作区根 contract 说明")
+    # 多要素检查：验证语义存在，不绑定措辞
+    if "9222" not in skill or "默认" not in skill:
+        fail("SKILL.md 缺少默认端口规则（应同时提到 9222 与默认端口语义）")
+    if "list-scripts.py" not in skill or "--root" not in skill:
+        fail("SKILL.md 缺少 list-scripts 显式根路径说明（应同时提到 list-scripts.py 与 --root）")
+    if "工作区根" not in skill or "cwd" not in skill or ".dp" not in skill:
+        fail("SKILL.md 缺少工作区根 contract 说明（应同时提到工作区根、cwd、.dp）")
 
 
 def validate_output_contract(root: Path) -> None:

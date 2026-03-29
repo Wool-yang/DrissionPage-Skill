@@ -18,6 +18,7 @@ from _dp_compat import (
     get_download_path,
     get_download_path_sentinel,
     get_owner_or_self,
+    get_user_agent,
     is_download_path_missing,
     run_browser_cdp,
     set_download_path,
@@ -46,16 +47,7 @@ def _is_wsl() -> bool:
 def _browser_os_name(obj) -> str:
     """从当前浏览器 UA 推断浏览器所在 OS。"""
     page = get_owner_or_self(obj)
-    ua = ""
-    try:
-        ua = page.run_js("navigator.userAgent", as_expr=True) or ""
-    except TypeError:
-        try:
-            ua = page.run_js("navigator.userAgent") or ""
-        except Exception:
-            ua = ""
-    except Exception:
-        ua = ""
+    ua = get_user_agent(page)
 
     if "Windows NT" in ua:
         return "windows"

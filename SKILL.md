@@ -5,8 +5,8 @@ description: >
 compatibility: >
   需要宿主客户端能够读取此 skill、运行本地 Python 与 shell 命令、读取 bundled scripts/references，并在目标工作区写文件。默认假设 Python 3.10+、可写文件系统、以及可连接本地 Chromium 远程调试端口的环境。
 metadata:
-  bundle-version: "2026-03-29.1"
-  runtime-lib-version: "2026-03-29.1"
+  bundle-version: "2026-03-29.2"
+  runtime-lib-version: "2026-03-29.2"
 ---
 
 # 浏览器自动化
@@ -50,6 +50,10 @@ metadata:
    - Windows：`.dp/.venv/Scripts/python.exe`
    - macOS / Linux：`.dp/.venv/bin/python`
 
+**两种刷新路径的区别**：
+- `runtime-lib-version` 变化：同步 `.dp/lib/` 文件，更新 state.json（lib 有新版本才需要）
+- `bundle-version` 单独变化（只有文档/脚本变更）：只刷新工作区文档和 state.json，**不重建 venv、不重装依赖**
+
 **doctor 的职责边界**：doctor 只检测/修复**工作区环境**（venv、lib、版本一致性）。
 以下属于**任务运行时检查**，不由 doctor 负责：
 - 浏览器是否已打开、调试端口是否可连接
@@ -60,7 +64,9 @@ metadata:
 从用户请求或上下文提取：
 
 - `site-name`：小写连字符格式，如 `hacker-news`
-- 意图：`screenshot` / `scrape` / `login` / `form` / `web-page-sync` / `custom`
+- 意图：base 集合为 `screenshot` / `scrape` / `login` / `form` / `upload` / `download` / `newtab` / `web-page-sync` / `custom`，
+  允许用 `<base>-<qualifier>` 格式扩展（如 `scrape-orders`、`login-sso`）；
+  `scripts/list-scripts.py --intent` 按**子串**过滤，不是精确匹配
 - 对象选择（见 `references/mode-selection.md`）：
   - 需要点击、截图、DOM、页面渲染 -> **ChromiumPage**（默认）
   - 已登录浏览器，需要同步 cookies 继续高效请求 -> **WebPage**
@@ -93,20 +99,13 @@ hostname 推导规则（由 `normalize_site_name()` 实现）：
 
 ### 4. 交互与节奏约束
 
-- 优先 DrissionPage / CDP 内置能力，尽量不要手写 DOM 事件、直接改 `value`、直接改状态
-- 点击默认顺序：`wait.clickable()` -> `scroll.to_see()` -> `wait.stop_moving()` -> `wait.not_covered()` -> `click(by_js=False)`
-- 输入默认顺序：`scroll.to_see()` -> `wait.clickable()` -> `focus()` -> `clear(by_js=False)` -> `input(..., by_js=False)`
-- 滚动 / 悬停 / 拖拽优先 `scroll.to_see()`、`hover()`、`drag()` / `drag_to()`
-- 上传优先区分两类：
-  - 直接 `input[type=file]` 优先 bundled `upload_file(ele, path)`，它会处理跨平台路径
-  - 非 file input 但会触发 chooser 的元素，再走 `upload_file()` 内部的 chooser 路径
-- 下载优先 bundled `download_file(ele, save_path, ...)`
-  - 同 OS 场景优先走 DrissionPage 自带下载管理
-  - 跨 OS 场景（如 WSL 接管 Windows Chromium）或 DP 下载失败时，再 fallback 到 raw CDP 下载目录策略
-  - 对 `data:` 直链下载优先本地直存，不强依赖浏览器下载管理器
+- 优先 DrissionPage / CDP 内置能力，不手写 DOM 事件、不直接改 `value`
+- 点击 / 输入优先使用 bundled `native_click()` / `native_input()`（含完整等待链）
+- 上传优先 `upload_file()`，下载优先 `download_file()`（均已处理跨平台路径和降级策略）
 - 新标签优先 `click.for_new_tab()` / `wait.new_tab()`
-- JS 只用于只读探测、辅助定位、临时打标；`by_js=True`、`this.click()`、手动派发事件仅最后兜底
-- 节奏保持保守：避免高频刷新、无间隔重试、短时间打开过多 tab、短时间扫过多目标
+- JS 只用于只读探测、辅助定位、临时打标；`by_js=True` 仅最后兜底
+- 节奏保持保守：避免高频刷新、无间隔重试、短时间打开过多 tab
+- 完整交互链路和 workflow 模板见 `references/workflows.md`
 
 ### 5. 复用优先
 
@@ -145,7 +144,12 @@ hostname 推导规则（由 `normalize_site_name()` 实现）：
 - 一个目录对应一次执行，目录内文件用语义名称（`data.json`、`screenshot.png` 等）
 - 临时测试输出保存到 `.dp/tmp/_out/`
 - 只在以下情况向用户追问：账号密码、高风险动作（支付 / 发帖 / 删除）、确实无法推断的多义任务
-- 如果任务完成后明显值得复用，将脚本沉淀到 `.dp/projects/<site>/scripts/<name>.py`
+- 任务完成后按以下判断是否沉淀脚本：
+
+  **默认沉淀**：登录 / bootstrap 脚本、多步骤流程、用户明确要求保留、已在同站点被第二次引用
+  **默认不沉淀**：一次性探索、强依赖临时页面状态、ad-hoc 单步操作
+
+  满足沉淀条件时，将脚本写入 `.dp/projects/<site>/scripts/<name>.py`
 - 沉淀脚本应在末尾用 `mark_script_status("ok")` 回写运行状态，并在 except 中回写 `"broken"`
 
 **关于失败处理与跨脚本协作**：脚本异常时如何响应（调试/重试/降级模式），
@@ -154,33 +158,11 @@ hostname 推导规则（由 `normalize_site_name()` 实现）：
 
 ## 站点 README 规则
 
-站点级 `README.md` 采用**混合托管模型**：`## Scripts` 区块由 Agent 自动维护，其余章节由人工维护。
-详细规范见 `references/site-readme.md`。
+站点级 `README.md` 采用**混合托管模型**：`## Scripts` 区块由 Agent 自动维护（用 `<!-- dp:scripts:start/end -->` 标记），其余章节由人工维护。
 
-### 最小骨架（必需）
-
-每个 `.dp/projects/<site>/README.md` 至少包含：
-
-- `# <site-name>`
-- `## Scripts`（含托管标记 `<!-- dp:scripts:start/end -->`）
-- `## Notes`
-- `## Last Updated`
-
-### Scripts 托管区
-
-`## Scripts` 使用托管标记，Agent 只更新标记之间的脚本条目，不触碰文件其他内容：
-
-```md
-## Scripts
-
-<!-- dp:scripts:start -->
-- `scripts/login.py` - 登录并进入报表页；适用于需要复用登录态的场景；updated: 2026-03-26
-<!-- dp:scripts:end -->
-```
-
-- 新增/修改/删除沉淀脚本时更新托管区和 `## Last Updated`
 - 临时脚本和一次性探索脚本不写入 README
 - 若托管标记损坏或缺失，只输出 warning，不重写整份文件
+- 骨架格式和完整规范见 `references/site-readme.md`
 
 ## 脚本规范
 

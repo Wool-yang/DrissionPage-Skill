@@ -81,7 +81,17 @@
 - 多步骤产生的所有输出落入同一 run dir
 - 文件名使用语义名称区分不同步骤
 
-## 13. 源码 smoke vs 安装副本 smoke
+## 13. fresh-tab 绑定检查（手动验收）
+
+`connect_browser_fresh_tab()` 的 tab_id 绑定只有单元测试覆盖，需通过真实浏览器手动验证：
+
+- 记录调用前 `browser.tabs` 数量
+- 调用 `connect_browser_fresh_tab()` 后确认 tab 数量增加了 1
+- 返回的 `page.url` 为 `about:blank`（或传入的 url 参数值），不是原来活跃 tab 的 URL
+- 在新 tab 上执行 `page.get("https://...")` 不影响原 tab 内容
+- 若上述任意一项失败，说明 DrissionPage 内部存在单例缓存导致 tab 绑定偏差，需考虑改用 `browser.get_tab(tab_id)` 方案
+
+## 14. 源码 smoke vs 安装副本 smoke
 
 ### 源码 smoke（日常开发验证）
 

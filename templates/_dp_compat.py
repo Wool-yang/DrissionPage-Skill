@@ -1,10 +1,13 @@
-"""DrissionPage 私有 API 兼容层。
+"""DrissionPage 兼容层。
 
-所有对 DrissionPage 内部属性 / 方法的直接访问都在本文件集中封装。
-当 DrissionPage 升级后若有 breaking change，只需修改本文件。
+本文件集中封装所有对 DrissionPage 的版本敏感访问，分两类：
+- 私有 API 访问：对 DrissionPage 内部属性 / 方法的直接访问
+- API 版本差异：不同版本 DrissionPage 的签名或行为差异
+
+原则：只要是 DrissionPage 的版本兼容逻辑，都应先想到往本文件收，不要散落在 utils.py 等业务文件中。
 
 每个函数都标注了所依赖的私有实现，便于版本升级时定向验证。
-若需升级 DrissionPage，请先逐一检查本文件中标注"私有"的函数。
+若需升级 DrissionPage，请先逐一检查本文件。
 
 已验证的 DrissionPage 版本范围：>=4.1.1,<4.2
 """
@@ -67,3 +70,24 @@ def run_browser_cdp(browser, method: str, **kwargs):
     依赖 DrissionPage 私有方法：browser._run_cdp(method, **kwargs)
     """
     return browser._run_cdp(method, **kwargs)
+
+
+def get_user_agent(page) -> str:
+    """从 page 获取浏览器 User-Agent 字符串，兼容 DrissionPage API 差异。
+
+    API 版本差异：
+    - 4.1.x 部分版本：run_js(expr, as_expr=True) 签名
+    - 4.1.x 其他版本：run_js(expr) 签名（as_expr 参数不存在）
+    空值或异常时返回空字符串。
+    """
+    try:
+        ua = page.run_js("navigator.userAgent", as_expr=True)
+        return ua or ""
+    except TypeError:
+        try:
+            ua = page.run_js("navigator.userAgent")
+            return ua or ""
+        except Exception:
+            return ""
+    except Exception:
+        return ""
