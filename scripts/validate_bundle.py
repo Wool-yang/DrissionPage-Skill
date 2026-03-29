@@ -141,13 +141,21 @@ def validate_forbidden_paths(root: Path) -> None:
             fail(f"存在不应分发的字节码文件：{path}")
 
 
+_FORBIDDEN_TEXT_SKIP = {
+    "scripts/validate_bundle.py",
+    "scripts/test_helpers.py",
+    # README 是面向用户的文档，允许举例说明各客户端的适配文件（如 openai.yaml）
+    "README.md",
+    "README_EN.md",
+}
+
+
 def validate_forbidden_text(root: Path) -> None:
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        if path == root / "scripts" / "validate_bundle.py":
-            continue
-        if path == root / "scripts" / "test_helpers.py":
+        rel = path.relative_to(root).as_posix()
+        if rel in _FORBIDDEN_TEXT_SKIP:
             continue
         if path.suffix not in {".md", ".py", ".json", ".gitignore"}:
             continue
