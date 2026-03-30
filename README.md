@@ -4,8 +4,6 @@
 
 一个面向所有支持 Skill 规范的客户端框架的浏览器自动化 Skill，基于 [DrissionPage](https://github.com/g1879/DrissionPage) 接管用户已打开的 Chromium 浏览器，完成截图、抓取、登录、表单填写、文件上下传等网页自动化任务。
 
-`dp-skill-source/` 是公开安装源与 source of truth，定义的是跨客户端共享的通用 Skill contract，而不是某一个宿主客户端的私有实现。
-
 ---
 
 ## 核心理念
@@ -151,15 +149,6 @@ Claude Code 侧的 skill 目录、frontmatter 扩展字段和调用规则，以 
 
 - [DrissionPage](https://github.com/g1879/DrissionPage)（`>=4.1.1,<4.2`）：核心浏览器自动化库，本项目的运行时库和工作流设计均基于 DrissionPage 提供的 API。
 - Python 标准库（无其他第三方依赖）
-
-## 版本规范
-
-| 字段 | 含义 | 触发条件 |
-|------|------|----------|
-| `runtime-lib-version` | 运行时库版本 | 修改 `templates/` 下任意文件 |
-| `bundle-version` | Bundle 整体版本 | 任何文件变更 |
-
-格式：`YYYY-MM-DD.N`（当天第 N 次发布）
 
 ## License
 

@@ -4,8 +4,6 @@
 
 A browser automation Skill for any client framework that supports the Skill specification. Built on [DrissionPage](https://github.com/g1879/DrissionPage), it takes over the user's already-open Chromium browser to perform screenshots, scraping, login, form filling, file upload/download, and more.
 
-`dp-skill-source/` is the public installation source and single source of truth, defining a cross-client Skill contract — not a private implementation tied to any one host.
-
 ---
 
 ## Core Philosophy
@@ -151,15 +149,6 @@ For Claude Code-specific skill directories, frontmatter extensions, and invocati
 
 - [DrissionPage](https://github.com/g1879/DrissionPage) (`>=4.1.1,<4.2`): The core browser automation library. The runtime library and workflow design in this project are built on DrissionPage's API.
 - Python standard library (no other third-party dependencies)
-
-## Versioning
-
-| Field | Meaning | When to bump |
-|-------|---------|--------------|
-| `runtime-lib-version` | Runtime library version | Any change to `templates/` |
-| `bundle-version` | Overall bundle version | Any file change |
-
-Format: `YYYY-MM-DD.N` (N-th release of the day)
 
 ## License
 
