@@ -2,13 +2,14 @@
 
 **[中文](README.md)**
 
-A browser automation Skill for any client framework that supports the Skill specification. Built on [DrissionPage](https://github.com/g1879/DrissionPage), it takes over the user's already-open Chromium browser to perform screenshots, scraping, login, form filling, file upload/download, and more.
+A browser automation Skill for any client framework that supports the Skill specification. Built on [DrissionPage](https://github.com/g1879/DrissionPage), it acquires and attaches to a connectable Chromium debug address through browser providers to perform screenshots, scraping, login, form filling, file upload/download, and more.
 
 ---
 
 ## Core Philosophy
 
-- **Take over, don't spawn**: Connects to the user's existing browser via the remote debugging port, reusing active sessions and cookies. Never launches or closes the browser on its own.
+- **Provider-first**: Resolve a browser provider first, then attach through the debug address it returns. Plain remote-debugging port attachment is also modeled as the `cdp-port` provider.
+- **Provider-extensible**: For fingerprint browsers such as AdsPower or local launcher-driven browsers, the `dp` core only provides the provider contract and loader. The actual provider implementation lives in the workspace as `.dp/providers/<name>.py`, then DrissionPage attaches through the returned debug address.
 - **Reuse, don't rewrite**: Automation scripts are saved per-site and reused on subsequent similar tasks instead of being regenerated.
 - **Native interaction first**: Clicks and inputs use DrissionPage's built-in native interaction chain — no raw DOM event manipulation, closer to real user behavior.
 
@@ -24,6 +25,7 @@ A browser automation Skill for any client framework that supports the Skill spec
 | Download | File download (with cross-platform path handling) |
 | New tab | Open links and interact with new tabs |
 | Hybrid mode | Browser login + efficient requests |
+| Fingerprint browsers | Start or locate a browser via a workspace provider, then attach |
 
 ## Installation
 
@@ -31,7 +33,7 @@ A browser automation Skill for any client framework that supports the Skill spec
 
 - Any client framework that supports the Skill specification (e.g. Claude Code, Codex, or other compatible implementations)
 - Python 3.10+
-- Chromium / Chrome with remote debugging enabled (`--remote-debugging-port=9222`)
+- If the default provider is `cdp-port`, Chromium / Chrome must already expose a remote debugging port
 
 ### Install the Skill
 
@@ -55,12 +57,15 @@ python /path/to/skills/dp/scripts/doctor.py
 
 ```bash
 # macOS / Linux
-google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug
+google-chrome --remote-debugging-port=<port> --user-data-dir=/tmp/chrome-debug
 
 # Windows (PowerShell)
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-  --remote-debugging-port=9222 --user-data-dir="$env:TEMP\chrome-debug"
+  --remote-debugging-port=<port> --user-data-dir="$env:TEMP\chrome-debug"
 ```
+
+Generic workflow templates inherit the workspace `default_provider` from `.dp/config.json` by default.
+Clients or users can switch it to another workspace provider; an explicit test port is only required when the effective default remains `cdp-port`.
 
 ## Usage
 
@@ -74,10 +79,12 @@ Once installed and initialized, describe your task in natural language inside a 
 
 The Skill will automatically:
 1. Check workspace version and upgrade if needed
-2. Connect to the existing browser (scanning ports `9222 / 9333 / 9444 / 9111`)
+2. Resolve the default provider and acquire a debug address through it
 3. Look for previously saved scripts for this site/task and reuse them
 4. Generate and execute the automation script
 5. Save output to `.dp/projects/<site>/output/<task>/<timestamp>/`
+
+If a task depends on a specific provider, the client or script can pin it explicitly; generic templates otherwise inherit the workspace default.
 
 ## Repository Structure
 
@@ -86,9 +93,12 @@ The Skill will automatically:
 ├── SKILL.md                  # Skill descriptor (read by any Skill-spec-compatible client)
 ├── templates/                # Runtime library (copied to .dp/lib/ during workspace init)
 │   ├── connect.py            # Browser connection helper
+│   ├── download_correlation.py # Single-target download request-correlation layer
 │   ├── output.py             # Output path management
 │   ├── utils.py              # Common operations (screenshot, click, input, upload, download)
-│   └── _dp_compat.py         # DrissionPage internal API compatibility shim
+│   ├── _dp_compat.py         # DrissionPage internal API compatibility shim
+│   └── providers/
+│       └── cdp-port.py       # Runtime-managed fallback provider template
 ├── scripts/                  # Management tools
 │   ├── doctor.py             # Workspace init and health check
 │   ├── install.py            # Bundle sync installer
@@ -98,6 +108,7 @@ The Skill will automatically:
 │   └── validate_bundle.py    # Pre-release bundle validation
 ├── references/               # Agent reference docs
 │   ├── workflows.md          # Workflow code templates
+│   ├── provider-contract.md  # Workspace provider contract
 │   ├── mode-selection.md     # Object selection decision matrix
 │   ├── interface.md          # DrissionPage API quick reference
 │   └── site-readme.md        # Site README specification

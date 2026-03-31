@@ -28,11 +28,14 @@ REQUIRED_FILES = [
     "scripts/validate_bundle.py",
     "scripts/test_helpers.py",
     "templates/connect.py",
+    "templates/download_correlation.py",
     "templates/output.py",
     "templates/utils.py",
     "templates/_dp_compat.py",
+    "templates/providers/cdp-port.py",
     "references/interface.md",
     "references/mode-selection.md",
+    "references/provider-contract.md",
     "references/workflows.md",
     "references/site-readme.md",
     "evals/evals.json",
@@ -56,6 +59,11 @@ FORBIDDEN_TEXT_PATTERNS = [
 ]
 FORBIDDEN_PATH_PARTS = {"__pycache__"}
 FORBIDDEN_FILENAMES = {"list-scripts.sh"}
+REMOVED_CONNECT_WRAPPER_PATTERNS = (
+    re.compile(r"(?<![A-Za-z0-9_])connect_browser\("),
+    re.compile(r"(?<![A-Za-z0-9_])connect_browser_fresh_tab\("),
+    re.compile(r"(?<![A-Za-z0-9_])connect_web_page\("),
+)
 
 
 def fail(msg: str) -> None:
@@ -182,9 +190,11 @@ def validate_python(root: Path) -> None:
         "scripts/smoke.py",
         "scripts/validate_bundle.py",
         "templates/connect.py",
+        "templates/download_correlation.py",
         "templates/output.py",
         "templates/utils.py",
         "templates/_dp_compat.py",
+        "templates/providers/cdp-port.py",
     ):
         path = root / rel
         source = path.read_text(encoding="utf-8")
@@ -219,14 +229,88 @@ def validate_rule_markers(root: Path) -> None:
         fail("SKILL.md 缺少 bundle_version preflight 描述")
     # 章节内多要素检查：token 必须出现在对应章节，不接受散落在全文的假阳性
     port_sec = _extract_section(skill, "### 3. 端口与连接策略")
-    if "9222" not in port_sec or "默认" not in port_sec:
-        fail("SKILL.md 端口策略章节缺少默认端口说明（应在该章节内同时提到 9222 与默认端口语义）")
+    if "cdp-port" not in port_sec or "显式" not in port_sec or "port" not in port_sec:
+        fail("SKILL.md 端口策略章节缺少 cdp-port 显式端口说明（应在该章节内同时提到 cdp-port、显式 与 port）")
     reuse_sec = _extract_section(skill, "### 5. 复用优先")
     if "list-scripts.py" not in reuse_sec or "--root" not in reuse_sec or "cwd" not in reuse_sec:
         fail("SKILL.md 复用优先章节缺少 list-scripts 显式根路径说明（应在该章节内同时提到 list-scripts.py、--root 与 cwd）")
     preflight_sec = _extract_section(skill, "### 1. Preflight（工作区检测）")
-    if "工作区根" not in preflight_sec or "cwd" not in preflight_sec or ".dp" not in preflight_sec:
-        fail("SKILL.md Preflight 章节缺少工作区根说明（应在该章节内同时提到工作区根、cwd、.dp）")
+    required_preflight_tokens = (
+        "工作区根",
+        "cwd",
+        ".dp",
+        ".dp/config.json",
+        "default_provider",
+        ".dp/providers/cdp-port.py",
+        ".dp/state.json",
+        "runtime_lib_version",
+        "bundle_version",
+    )
+    missing_preflight_tokens = [token for token in required_preflight_tokens if token not in preflight_sec]
+    if missing_preflight_tokens:
+        fail(
+            "SKILL.md Preflight 章节缺少 workspace contract 关键项："
+            + ", ".join(missing_preflight_tokens)
+        )
+
+    managed_readiness_tokens = (
+        "DrissionPage",
+        ".dp/lib/connect.py",
+        ".dp/lib/download_correlation.py",
+        ".dp/lib/output.py",
+        ".dp/lib/utils.py",
+        ".dp/lib/_dp_compat.py",
+    )
+    missing_managed_readiness_tokens = [token for token in managed_readiness_tokens if token not in preflight_sec]
+    if missing_managed_readiness_tokens:
+        fail(
+            "SKILL.md Preflight 章节缺少 managed lib / DrissionPage ready 条件："
+            + ", ".join(missing_managed_readiness_tokens)
+        )
+
+    has_illegal_provider_boundary = (
+        "default_provider" in preflight_sec
+        and "不合法" in preflight_sec
+        and ("配置错误" in preflight_sec or "非法" in preflight_sec)
+        and ("不做猜测式修复" in preflight_sec or "不会自动修复" in preflight_sec)
+        and ("需用户" in preflight_sec or "需客户端" in preflight_sec or "需修正配置" in preflight_sec)
+    )
+    if not has_illegal_provider_boundary:
+        fail(
+            "SKILL.md Preflight 章节缺少非法 default_provider 的 fail-fast 边界"
+            "（应说明其属于配置错误、doctor 不会自动修复，且需用户或客户端修正配置）"
+        )
+
+    has_selected_provider_boundary = (
+        "cdp-port" in preflight_sec
+        and ("当前默认 provider" in preflight_sec or "default_provider" in preflight_sec)
+        and (
+            "对应 provider 文件" in preflight_sec
+            or ".dp/providers/<name>.py" in preflight_sec
+            or ".dp/providers/" in preflight_sec
+        )
+        and ("必须存在" in preflight_sec or "也必须存在" in preflight_sec)
+        and ("配置错误" in preflight_sec or "提供实现" in preflight_sec or "修正配置" in preflight_sec)
+    )
+    if not has_selected_provider_boundary:
+        fail(
+            "SKILL.md Preflight 章节缺少当前默认 provider 实现存在性边界"
+            "（应说明非 cdp-port 默认 provider 需要对应实现文件存在，缺失时需用户或客户端提供实现或修正配置）"
+        )
+
+    interaction_sec = _extract_section(skill, "### 4. 交互与节奏约束")
+    has_file_helper_fail_fast_boundary = (
+        ("upload_file()" in interaction_sec or "download_file()" in interaction_sec)
+        and "launch_info" in interaction_sec
+        and ("provider hints" in interaction_sec or "本地文件访问" in interaction_sec or "file_access_mode" in interaction_sec)
+        and ("remote" in interaction_sec or "不支持本地文件访问" in interaction_sec)
+        and ("直接报错" in interaction_sec or "直接失败" in interaction_sec or "fail fast" in interaction_sec)
+    )
+    if not has_file_helper_fail_fast_boundary:
+        fail(
+            "SKILL.md 交互章节缺少 remote file helper 的 fail-fast 边界"
+            "（应说明 upload/download 在传入 launch_info 后若 provider 明确不支持本地文件访问则直接报错）"
+        )
 
 
 def validate_output_contract(root: Path) -> None:
@@ -292,6 +376,91 @@ def validate_cross_file_consistency(root: Path) -> None:
             )
 
 
+def validate_removed_connect_wrappers(root: Path) -> None:
+    """canonical docs 不应再引用已移除的 legacy connect wrapper。"""
+    for rel in (
+        "SKILL.md",
+        "references/workflows.md",
+        "references/mode-selection.md",
+        "evals/smoke-checklist.md",
+    ):
+        text = (root / rel).read_text(encoding="utf-8")
+        for pattern in REMOVED_CONNECT_WRAPPER_PATTERNS:
+            if pattern.search(text):
+                fail(f"{rel} 不应再引用已移除的 legacy connect API：{pattern.pattern}")
+
+
+def _extract_same_level_heading_section(text: str, heading: str) -> str:
+    """按同级 heading 提取章节，避免被代码块里的 # 注释提前截断。"""
+    marker = f"{heading}\n"
+    start = text.find(marker)
+    if start < 0:
+        return ""
+    remainder = text[start + len(marker):]
+    match = re.search(r"^## ", remainder, re.MULTILINE)
+    return remainder[:match.start()] if match else remainder
+
+
+def validate_workflow_file_helper_contracts(root: Path) -> None:
+    """canonical workflows 的 upload/download contract 不应弱化 remote fail-fast 边界。"""
+    workflows = (root / "references" / "workflows.md").read_text(encoding="utf-8")
+
+    upload_sec = _extract_same_level_heading_section(workflows, "## Workflow 5：文件上传（upload）")
+    has_upload_boundary = (
+        "upload_file" in upload_sec
+        and "launch_info" in upload_sec
+        and ("provider hints" in upload_sec or "本地文件访问" in upload_sec or "file_access_mode" in upload_sec)
+        and ("remote" in upload_sec or "不支持本地文件访问" in upload_sec)
+        and ("直接报错" in upload_sec or "直接失败" in upload_sec or "fail fast" in upload_sec)
+    )
+    if not has_upload_boundary:
+        fail(
+            "references/workflows.md 的 upload contract 缺少 remote file helper 的 fail-fast 边界"
+            "（应说明 upload_file(..., launch_info=launch_info) 在 provider 明确不支持本地文件访问时直接报错）"
+        )
+
+    download_sec = _extract_same_level_heading_section(workflows, "## Workflow 6：文件下载（download）")
+    has_download_boundary = (
+        "download_file" in download_sec
+        and "launch_info" in download_sec
+        and ("remote" in download_sec or "不支持本地文件访问" in download_sec)
+        and ("直接报错" in download_sec or "直接失败" in download_sec or "fail fast" in download_sec)
+    )
+    if not has_download_boundary:
+        fail(
+            "references/workflows.md 的 download contract 缺少 remote file helper 的 fail-fast 边界"
+            "（应说明 download_file(..., launch_info=launch_info) 在 provider 明确不支持本地文件访问时直接报错）"
+        )
+
+
+def validate_smoke_checklist_contracts(root: Path) -> None:
+    """smoke checklist 的 preflight prose 不应弱化已收口的公共 contract。"""
+    checklist = (root / "evals" / "smoke-checklist.md").read_text(encoding="utf-8")
+    preflight_sec = _extract_same_level_heading_section(checklist, "## 2. Preflight 检查")
+
+    has_non_string_repair_boundary = (
+        "default_provider" in preflight_sec
+        and "非字符串" in preflight_sec
+        and ("自动修复" in preflight_sec or "触发 doctor" in preflight_sec)
+    )
+    if not has_non_string_repair_boundary:
+        fail(
+            "evals/smoke-checklist.md 的 Preflight 检查缺少 non-string default_provider 的 repair 边界"
+            "（应说明 default_provider 为非字符串时也属于 doctor 可自动修复的未初始化状态）"
+        )
+
+    has_selected_provider_snake_case_boundary = (
+        ("当前默认 provider" in preflight_sec or "default_provider" in preflight_sec)
+        and ("对应 provider 文件" in preflight_sec or ".dp/providers/<name>.py" in preflight_sec)
+        and "snake_case" in preflight_sec
+    )
+    if not has_selected_provider_snake_case_boundary:
+        fail(
+            "evals/smoke-checklist.md 的 Preflight 检查缺少等价 snake_case provider 文件边界"
+            "（应说明非 cdp-port 默认 provider 除 `.dp/providers/<name>.py` 外，也接受等价 snake_case 文件）"
+        )
+
+
 def run_unit_tests(root: Path) -> None:
     import subprocess
     result = subprocess.run(
@@ -321,6 +490,9 @@ def main() -> None:
     validate_rule_markers(root)
     validate_output_contract(root)
     validate_cross_file_consistency(root)
+    validate_removed_connect_wrappers(root)
+    validate_workflow_file_helper_contracts(root)
+    validate_smoke_checklist_contracts(root)
     run_unit_tests(root)
     cleanup_bytecode(root)  # 清除测试运行可能产生的字节码
     print("[OK] bundle looks clean")

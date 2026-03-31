@@ -2,7 +2,8 @@
 
 选错对象会导致功能缺失或效率低下。按以下矩阵决策：
 除非用户请求明显属于纯请求路径，否则不要把 `SessionPage` 当作默认选项。
-默认端口是 `9222`；若客户端已知目标端口，应优先显式传入。
+若默认 provider 最终为 `cdp-port`，应显式传入测试端口。
+通用 workflow 示例默认继承工作区 `default_provider`；客户端或用户可修改 `.dp/config.json`，只有任务明确依赖某个 provider 时才在脚本里固定它。
 
 ## 决策矩阵
 
@@ -14,6 +15,10 @@
 
 **选不准时用 ChromiumPage**——它功能最全，可随时降级。
 
+如果浏览器由 browser provider 管理，**对象选择规则不变**：
+仍然先按任务类型决定是 `ChromiumPage`、`WebPage` 还是 `SessionPage`；
+变化的只是连接入口，需要先通过 provider 启动浏览器，再接管返回的调试地址。
+
 ---
 
 ## ChromiumPage（默认）
@@ -21,9 +26,16 @@
 **适用**：动态页面、需要点击/输入/截图、JS 渲染内容、需要等待加载
 
 ```python
-from connect import connect_browser, parse_port
+from connect import (
+    build_default_browser_profile,
+    get_default_browser_provider,
+    parse_port,
+    start_profile_and_connect_browser,
+)
 
-page = connect_browser(parse_port())
+provider = get_default_browser_provider()
+browser_profile = build_default_browser_profile(provider, parse_port())
+launch_info, page = start_profile_and_connect_browser(provider, browser_profile)
 ```
 
 ---
@@ -33,9 +45,16 @@ page = connect_browser(parse_port())
 **适用**：已通过浏览器登录，需要切换到 requests 模式提速，同时保持 cookies
 
 ```python
-from connect import connect_web_page, parse_port
+from connect import (
+    build_default_browser_profile,
+    get_default_browser_provider,
+    parse_port,
+    start_profile_and_connect_web_page,
+)
 
-page = connect_web_page(parse_port(), mode="d")
+provider = get_default_browser_provider()
+browser_profile = build_default_browser_profile(provider, parse_port())
+launch_info, page = start_profile_and_connect_web_page(provider, browser_profile, mode="d")
 
 # 浏览器模式登录
 page.get("https://site.com/login")

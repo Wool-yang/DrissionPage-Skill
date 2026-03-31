@@ -10,8 +10,11 @@
 
 ## 2. Preflight 检查
 
-- 若 `.dp/state.json` 存在且 `runtime_lib_version` 与当前 skill 一致，客户端不重复跑 doctor
-- 只有 state 缺失、版本不一致、venv 损坏、显式要求修复时才触发 doctor
+- 只有 `.dp/.venv/` 存在且工作区 Python 可执行并可导入 `DrissionPage`、`.dp/lib/connect.py` / `.dp/lib/download_correlation.py` / `.dp/lib/output.py` / `.dp/lib/utils.py` / `.dp/lib/_dp_compat.py`、`.dp/providers/cdp-port.py`、`.dp/config.json`、`.dp/state.json` 全部就绪，且 `default_provider` 可规范化为合法 provider 名、若当前默认 provider 不是 `cdp-port` 则其对应 provider 文件也必须存在、state 中的 `runtime_lib_version` / `bundle_version` 与当前 skill 一致时，客户端才可跳过 doctor
+- `.dp/config.json` 缺失、损坏，或 `default_provider` 缺失 / 非字符串 / 空字符串 / 纯空白时，应触发 doctor 自动修复
+- `default_provider` 非空但不合法时，属于配置错误；doctor 不做猜测式修复，需用户或客户端修正配置
+- 当前默认 provider 非 `cdp-port` 但对应 provider 文件缺失时，属于配置错误；doctor 不会自动发明实现，需用户或客户端补齐对应 provider 文件（含 `.dp/providers/<name>.py` 或等价 snake_case 文件）或修正配置
+- 以上任一缺失、损坏或显式要求修复时，都应触发 doctor
 
 ## 3. 模式选择检查
 
@@ -21,9 +24,10 @@
 
 ## 4. 浏览器约束检查
 
-- 默认优先接管已有浏览器
+- 默认先解析工作区 provider，再接管返回的调试地址
 - 不新建、不关闭浏览器
-- 默认端口 9222；显式传入端口时优先使用显式端口
+- 若最终默认 provider 为 `cdp-port`，必须显式传入 `--port <port>`
+- `9222` 只能作为显式示例端口，不是隐藏默认值
 
 ## 5. 交互约束检查
 
@@ -43,14 +47,18 @@
 
 - 上传使用 bundled `upload_file()`
 - 直接 `input[type=file]` 优先走跨平台路径规范化 + 文件输入赋值；chooser 按钮再走点击上传
+- 若 provider 通过 `launch_info` 明确声明 `remote` 或不支持本地文件访问，`upload_file()` 应直接报错
 - 被上传文件视为输入，不放入 run-dir
 - run-dir 内只保存执行中生成的新文件（如截图确认）
 
 ## 8. 下载场景检查
 
 - 下载使用 bundled `download_file()`
-- 同 OS 场景优先走 DrissionPage 自带下载管理
+- `download_file()` 一次调用只管理一个目标下载
+- 统一走浏览器下载目录 + 原生点击 + 完成等待的 CDP 下载主路径
 - 跨平台场景下载目录要做规范化，避免 WSL 接管 Windows Chromium 时保存路径被本地 `Path()` 改坏
+- 若 provider 通过 `launch_info` 明确声明 `remote` 或不支持本地文件访问，`download_file()` 应直接报错
+- 若调用方显式传 `by_js=True`，只应影响点击触发方式，不应改变下载主路径
 - 对 `data:` 直链下载可优先本地直存，避免浏览器下载管理器成为单点故障
 - 同一次任务只有一个 run dir
 - 下载文件保存到当前 run dir，文件名优先语义名
@@ -83,10 +91,10 @@
 
 ## 13. fresh-tab 绑定检查（手动验收）
 
-`connect_browser_fresh_tab()` 的 tab_id 绑定只有单元测试覆盖，需通过真实浏览器手动验证：
+`start_profile_and_connect_browser(..., fresh_tab=True)` 的 tab_id 绑定只有单元测试覆盖，需通过真实浏览器手动验证：
 
 - 记录调用前 `browser.tabs` 数量
-- 调用 `connect_browser_fresh_tab()` 后确认 tab 数量增加了 1
+- 调用 `start_profile_and_connect_browser(..., fresh_tab=True)` 后确认 tab 数量增加了 1
 - 返回的 `page.url` 为 `about:blank`（或传入的 url 参数值），不是原来活跃 tab 的 URL
 - 在新 tab 上执行 `page.get("https://...")` 不影响原 tab 内容
 - 若上述任意一项失败，说明 DrissionPage 内部存在单例缓存导致 tab 绑定偏差，需考虑改用 `browser.get_tab(tab_id)` 方案
@@ -95,10 +103,10 @@
 
 ### 源码 smoke（日常开发验证）
 
-从 `dp-skill-source/` 所在工作区根执行（.dp/ 已初始化，浏览器已以调试端口运行）：
+从 `dp-skill-source/` 所在工作区根执行（`.dp/` 已初始化；若当前默认 provider 仍为 `cdp-port`，浏览器已在你即将显式传入的调试端口上运行）：
 
 ```
-python <skill-root>/scripts/smoke.py --port 9222
+python <skill-root>/scripts/smoke.py --port <port>
 ```
 
 - 验证 run-dir contract（路径、文件语义名、上传输入不进 run-dir 等）
@@ -109,7 +117,7 @@ python <skill-root>/scripts/smoke.py --port 9222
 确认安装副本已从最新内层源码同步后，从外层工作区执行：
 
 1. `python <installed-skill-dir>/scripts/doctor.py --check`（若失败则先 init）
-2. `python <installed-skill-dir>/scripts/smoke.py --port 9222`
+2. `python <installed-skill-dir>/scripts/smoke.py --port <port>`
 
 - 验证端到端宿主加载行为
 - 验证已安装副本与源码 contract 一致

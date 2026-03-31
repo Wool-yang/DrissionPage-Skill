@@ -6,9 +6,12 @@ _rewrite_header_fields / mark_script_status / extract_fields / doctor.check 最�
 from __future__ import annotations
 
 import importlib.util
+import inspect
+import io
 import os
 import sys
 import tempfile
+from contextlib import redirect_stderr
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,6 +61,17 @@ _vb_spec = importlib.util.spec_from_file_location(
 _vb = importlib.util.module_from_spec(_vb_spec)
 _vb_spec.loader.exec_module(_vb)
 
+
+def _load_download_correlation_module():
+    """按文件路径加载 download_correlation 模块。"""
+    path = Path(__file__).resolve().parent.parent / "templates" / "download_correlation.py"
+    if not path.exists():
+        raise FileNotFoundError(path)
+    spec = importlib.util.spec_from_file_location("download_correlation", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 # ── 测试框架 ──────────────────────────────────────────────────────────────────
 
 _failed = 0
@@ -87,13 +101,16 @@ class _FakeOwner:
         self.upload_paths: list[str] = []
         self.upload_waited = False
         self.browser_cdp_calls: list[tuple[str, dict]] = []
+        self.page_cdp_calls: list[tuple[str, dict]] = []
         self.set = SimpleNamespace(upload_files=self._upload_files)
         self.wait = SimpleNamespace(upload_paths_inputted=self._upload_paths_inputted)
+        self._driver = SimpleNamespace(set_callback=self._set_callback)
         self._download_path = "/fake/owner-downloads"
         self._browser = SimpleNamespace(
             _download_path="/fake/browser-downloads",
             _run_cdp=self._browser_run_cdp,
         )
+        self.driver_callbacks: dict[str, object] = {}
 
     def run_js(self, _script: str, as_expr: bool = True):
         return self._ua
@@ -107,6 +124,16 @@ class _FakeOwner:
     def _browser_run_cdp(self, method: str, **kwargs):
         self.browser_cdp_calls.append((method, kwargs))
         return {}
+
+    def _run_cdp(self, method: str, **kwargs):
+        self.page_cdp_calls.append((method, kwargs))
+        return {}
+
+    def _set_callback(self, event: str, callback, immediate: bool = False) -> None:
+        if callback:
+            self.driver_callbacks[event] = callback
+        else:
+            self.driver_callbacks.pop(event, None)
 
 
 class _FakeWait:
@@ -722,10 +749,11 @@ def _patch_doctor(tmp: Path):
     def ctx():
         dp = tmp / ".dp"
         dp.mkdir(parents=True, exist_ok=True)
-        saved = {k: getattr(_doctor, k) for k in ("WORKSPACE", "VENV", "LIB", "STATE")}
+        saved = {k: getattr(_doctor, k) for k in ("WORKSPACE", "VENV", "LIB", "CONFIG", "STATE")}
         _doctor.WORKSPACE = dp
         _doctor.VENV = dp / ".venv"
         _doctor.LIB = dp / "lib"
+        _doctor.CONFIG = dp / "config.json"
         _doctor.STATE = dp / "state.json"
         try:
             yield dp
@@ -734,6 +762,42 @@ def _patch_doctor(tmp: Path):
                 setattr(_doctor, k, v)
 
     return ctx()
+
+
+def _seed_workspace_ready_state(
+    dp: Path,
+    *,
+    default_provider: str = "cdp-port",
+    create_selected_provider: bool = True,
+) -> Path:
+    """写出最小 ready 工作区结构，返回 fake venv python 路径。"""
+    fake_py = dp / ".venv" / "bin" / "python"
+    fake_py.parent.mkdir(parents=True, exist_ok=True)
+    fake_py.write_text("#!/bin/sh\n", encoding="utf-8")
+    for name in ("connect.py", "download_correlation.py", "output.py", "utils.py", "_dp_compat.py"):
+        path = dp / "lib" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    providers = dp / "providers"
+    providers.mkdir(parents=True, exist_ok=True)
+    (providers / "cdp-port.py").write_text("", encoding="utf-8")
+    if default_provider != "cdp-port" and create_selected_provider:
+        (providers / f"{default_provider}.py").write_text("", encoding="utf-8")
+    (dp / "config.json").write_text(
+        _json.dumps({"default_provider": default_provider}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (dp / "state.json").write_text(
+        _json.dumps(
+            {
+                "runtime_lib_version": _doctor._read_runtime_lib_version(),
+                "bundle_version": _doctor._read_bundle_version(),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return fake_py
 
 
 def test_doctor_check_state_missing() -> None:
@@ -825,6 +889,66 @@ def test_doctor_check_python_not_executable() -> None:
                       str(issues))
             except Exception as e:
                 check("doctor: Python 不可执行不应 traceback", False, str(e))
+
+
+def test_doctor_check_requires_selected_default_provider_file() -> None:
+    """当前默认 provider 不是 cdp-port 时，缺少对应 provider 文件应返回 issue。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            fake_py = _seed_workspace_ready_state(
+                dp,
+                default_provider="adspower",
+                create_selected_provider=False,
+            )
+            with _mock.patch.object(_doctor, "resolve_venv_python", return_value=fake_py), _mock.patch.object(
+                _doctor.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ):
+                issues = _doctor.check()
+            check(
+                "doctor: 缺少当前默认 provider 文件被报告",
+                any("adspower" in issue and "provider" in issue for issue in issues),
+                str(issues),
+            )
+
+
+def test_doctor_check_requires_download_correlation_lib() -> None:
+    """新的 managed runtime asset 缺失时，doctor.check() 应返回 issue。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            fake_py = _seed_workspace_ready_state(dp)
+            (dp / "lib" / "download_correlation.py").unlink(missing_ok=True)
+            with _mock.patch.object(_doctor, "resolve_venv_python", return_value=fake_py), _mock.patch.object(
+                _doctor.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ):
+                issues = _doctor.check()
+            check(
+                "doctor: 缺少 download_correlation.py 会报错",
+                any("download_correlation.py" in issue for issue in issues),
+                str(issues),
+            )
+
+
+def test_doctor_check_reports_corrupted_config() -> None:
+    """config.json 损坏时应明确报告配置损坏，而不是降级成缺少 default_provider。"""
+    with tempfile.TemporaryDirectory() as d:
+        with _patch_doctor(Path(d)) as dp:
+            fake_py = _seed_workspace_ready_state(dp)
+            (dp / "config.json").write_text("{broken", encoding="utf-8")
+            with _mock.patch.object(_doctor, "resolve_venv_python", return_value=fake_py), _mock.patch.object(
+                _doctor.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ):
+                issues = _doctor.check()
+            check(
+                "doctor: 损坏 config 被明确报告",
+                any("config.json" in issue and ("损坏" in issue or "格式错误" in issue) for issue in issues),
+                str(issues),
+            )
 
 
 def test_doctor_write_state_fields() -> None:
@@ -933,6 +1057,19 @@ def test_doctor_init_lib_overwrite_and_state() -> None:
                       content != "# STALE CONTENT",
                       f"content[:40]={content[:40]!r}")
 
+            check(
+                "init: providers/cdp-port.py 已同步",
+                (patched_dp / "providers" / "cdp-port.py").exists(),
+                str((patched_dp / "providers" / "cdp-port.py")),
+            )
+            config_path = patched_dp / "config.json"
+            config = _json.loads(config_path.read_text(encoding="utf-8"))
+            check(
+                "init: config.json 含 default_provider",
+                config.get("default_provider") == "cdp-port",
+                str(config),
+            )
+
             # 6. 验证 state.json 写入了正确字段
             state_path = patched_dp / "state.json"
             if state_path.exists():
@@ -944,6 +1081,214 @@ def test_doctor_init_lib_overwrite_and_state() -> None:
             else:
                 check("init: state.json 已创建", False, "state.json 不存在")
                 check("init: state.json 字段（state 不存在）", False, "")
+
+
+def _create_real_test_venv_with_fake_drissionpage(dp: Path) -> Path | None:
+    """在指定 .dp 目录下创建真实最小 venv，并注入假的 DrissionPage 包。"""
+    venv_dir = dp / ".venv"
+    venv_dir.mkdir(parents=True, exist_ok=True)
+
+    import subprocess as _sp
+
+    r = _sp.run([sys.executable, "-m", "venv", str(venv_dir)], capture_output=True, timeout=30)
+    if r.returncode != 0:
+        return None
+
+    venv_py_win = venv_dir / "Scripts" / "python.exe"
+    venv_py_unix = venv_dir / "bin" / "python"
+    venv_py = venv_py_win if venv_py_win.exists() else venv_py_unix
+    if not venv_py.exists():
+        return None
+
+    sp_r = _sp.run(
+        [str(venv_py), "-c", "import site; print(site.getsitepackages()[0])"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if sp_r.returncode == 0:
+        sp_dir = Path(sp_r.stdout.strip()) / "DrissionPage"
+        sp_dir.mkdir(parents=True, exist_ok=True)
+        (sp_dir / "__init__.py").write_text("# fake DrissionPage for testing\n", encoding="utf-8")
+    return venv_py
+
+
+def test_doctor_init_repairs_blank_default_provider() -> None:
+    """init() 遇到空字符串 default_provider 时应修复为 cdp-port。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        dp = tmp / ".dp"
+        venv_py = _create_real_test_venv_with_fake_drissionpage(dp)
+        if venv_py is None:
+            check("init: 空 default_provider 修复（venv 创建失败，跳过）", True, "skipped")
+            return
+
+        with _patch_doctor(tmp) as patched_dp:
+            (patched_dp / "config.json").write_text('{"default_provider": ""}', encoding="utf-8")
+            try:
+                result = _doctor.init()
+                config = _json.loads((patched_dp / "config.json").read_text(encoding="utf-8"))
+                check(
+                    "init: 空 default_provider 被修复",
+                    result is True and config.get("default_provider") == "cdp-port",
+                    str(config),
+                )
+            except Exception as e:
+                check("init: 空 default_provider 修复不应 traceback", False, str(e))
+
+
+def test_doctor_init_normalizes_default_provider() -> None:
+    """init() 遇到大小写/空白变体 default_provider 时应写回规范名。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        dp = tmp / ".dp"
+        venv_py = _create_real_test_venv_with_fake_drissionpage(dp)
+        if venv_py is None:
+            check("init: default_provider 规范化（venv 创建失败，跳过）", True, "skipped")
+            return
+
+        with _patch_doctor(tmp) as patched_dp:
+            (patched_dp / "config.json").write_text('{"default_provider": " CDP-PORT "}', encoding="utf-8")
+            try:
+                result = _doctor.init()
+                config = _json.loads((patched_dp / "config.json").read_text(encoding="utf-8"))
+                check(
+                    "init: default_provider 被规范化",
+                    result is True and config.get("default_provider") == "cdp-port",
+                    str(config),
+                )
+            except Exception as e:
+                check("init: default_provider 规范化不应 traceback", False, str(e))
+
+
+def test_doctor_init_fails_without_managed_provider_template() -> None:
+    """缺少 runtime-managed provider 模板时，init() 应失败且不写 state。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        dp = tmp / ".dp"
+        venv_py = _create_real_test_venv_with_fake_drissionpage(dp)
+        if venv_py is None:
+            check("init: 缺 managed provider 模板（venv 创建失败，跳过）", True, "skipped")
+            return
+
+        with _patch_doctor(tmp) as patched_dp:
+            orig_provider_templates = _doctor.PROVIDER_TEMPLATES
+            _doctor.PROVIDER_TEMPLATES = tmp / "missing-provider-templates"
+            try:
+                result = _doctor.init()
+                check(
+                    "init: 缺 managed provider 模板返回 False",
+                    result is False,
+                    repr(result),
+                )
+                check(
+                    "init: 缺 managed provider 模板不写 state",
+                    not (patched_dp / "state.json").exists(),
+                    str(patched_dp / "state.json"),
+                )
+            except Exception as e:
+                check("init: 缺 managed provider 模板不应 traceback", False, str(e))
+            finally:
+                _doctor.PROVIDER_TEMPLATES = orig_provider_templates
+
+
+def test_doctor_init_fails_when_selected_default_provider_file_missing() -> None:
+    """init() 遇到缺失的当前默认 provider 实现时应失败且不写 state。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        dp = tmp / ".dp"
+        venv_py = _create_real_test_venv_with_fake_drissionpage(dp)
+        if venv_py is None:
+            check("init: 缺当前默认 provider 文件（venv 创建失败，跳过）", True, "skipped")
+            return
+
+        with _patch_doctor(tmp) as patched_dp:
+            (patched_dp / "config.json").write_text('{"default_provider":"adspower"}', encoding="utf-8")
+            try:
+                result = _doctor.init()
+                check(
+                    "init: 缺当前默认 provider 文件返回 False",
+                    result is False,
+                    repr(result),
+                )
+                check(
+                    "init: 缺当前默认 provider 文件不写 state",
+                    not (patched_dp / "state.json").exists(),
+                    str(patched_dp / "state.json"),
+                )
+            except Exception as e:
+                check("init: 缺当前默认 provider 文件不应 traceback", False, str(e))
+
+
+def test_doctor_init_bundle_only_refresh_skips_runtime_sync() -> None:
+    """仅 bundle_version 漂移时，init() 不应覆盖 runtime 资产。"""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        dp = tmp / ".dp"
+        venv_py = _create_real_test_venv_with_fake_drissionpage(dp)
+        if venv_py is None:
+            check("init: bundle-only refresh 跳过 runtime sync（venv 创建失败，跳过）", True, "skipped")
+            return
+
+        with _patch_doctor(tmp) as patched_dp:
+            lib_dir = patched_dp / "lib"
+            lib_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("connect.py", "download_correlation.py", "output.py", "utils.py", "_dp_compat.py"):
+                (lib_dir / name).write_text("# KEEP RUNTIME\n", encoding="utf-8")
+
+            providers_dir = patched_dp / "providers"
+            providers_dir.mkdir(parents=True, exist_ok=True)
+            (providers_dir / "cdp-port.py").write_text("# KEEP PROVIDER\n", encoding="utf-8")
+            (patched_dp / "config.json").write_text('{"default_provider":"cdp-port"}', encoding="utf-8")
+            (patched_dp / "state.json").write_text(
+                _json.dumps(
+                    {
+                        "runtime_lib_version": _doctor._read_runtime_lib_version(),
+                        "bundle_version": "1970-01-01.0",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            try:
+                with _mock.patch.object(
+                    _doctor,
+                    "create_venv",
+                    side_effect=AssertionError("bundle-only refresh 不应创建 venv"),
+                ), _mock.patch.object(
+                    _doctor,
+                    "install_drissionpage",
+                    side_effect=AssertionError("bundle-only refresh 不应重装 DrissionPage"),
+                ):
+                    result = _doctor.init()
+                check("init: bundle-only refresh 返回 True", result is True, repr(result))
+                for name in ("connect.py", "download_correlation.py", "output.py", "utils.py", "_dp_compat.py"):
+                    content = (lib_dir / name).read_text(encoding="utf-8")
+                    check(
+                        f"init: bundle-only refresh 不覆盖 lib/{name}",
+                        content == "# KEEP RUNTIME\n",
+                        content[:80],
+                    )
+                provider_content = (providers_dir / "cdp-port.py").read_text(encoding="utf-8")
+                check(
+                    "init: bundle-only refresh 不覆盖 providers/cdp-port.py",
+                    provider_content == "# KEEP PROVIDER\n",
+                    provider_content[:80],
+                )
+                state = _json.loads((patched_dp / "state.json").read_text(encoding="utf-8"))
+                check(
+                    "init: bundle-only refresh 更新 bundle_version",
+                    state.get("bundle_version") == _doctor._read_bundle_version(),
+                    str(state),
+                )
+                check(
+                    "init: bundle-only refresh 保持 runtime_lib_version",
+                    state.get("runtime_lib_version") == _doctor._read_runtime_lib_version(),
+                    str(state),
+                )
+            except Exception as e:
+                check("init: bundle-only refresh 不应 traceback", False, str(e))
 
 
 # ── normalize_site_name 测试 ──────────────────────────────────────────────────
@@ -1051,6 +1396,126 @@ def test_browser_upload_path_ua_expr_probe() -> None:
     check("upload path: UA probe 用表达式模式", result == expected, repr(result))
 
 
+def test_browser_upload_path_prefers_launch_info_browser_os_hint() -> None:
+    """launch_info.provider_metadata.browser_os 存在时，应优先于 UA 推断。"""
+    src = Path(__file__).resolve()
+    if not src.as_posix().startswith("/mnt/"):
+        check("upload path: launch_info browser_os hint（非 WSL /mnt 路径，跳过）", True, "skipped")
+        return
+    owner = _FakeOwner("Mozilla/5.0 (X11; Linux x86_64)")
+    launch_info = {
+        "provider": "chrome-cdp",
+        "provider_metadata": {"browser_os": "windows"},
+    }
+    with _mock.patch.object(_utils_mod, "_is_wsl", return_value=True):
+        result = browser_upload_path(src, owner, launch_info=launch_info)
+    check(
+        "upload path: launch_info browser_os hint 生效",
+        result.startswith("G:/") or result.startswith("\\\\wsl$\\"),
+        repr(result),
+    )
+
+
+def test_browser_upload_path_prefers_launch_info_path_namespace_hint() -> None:
+    """provider_metadata.path_namespace 存在时，应优先走声明的浏览器路径命名空间。"""
+    owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    launch_info = {
+        "provider": "custom-provider",
+        "provider_metadata": {
+            "browser_os": "windows",
+            "path_namespace": "posix",
+        },
+    }
+    with tempfile.NamedTemporaryFile() as f, _mock.patch.dict(
+        os.environ, {"WSL_DISTRO_NAME": "TestDistro"}, clear=False
+    ):
+        src = Path(f.name).resolve()
+        result = browser_upload_path(src, owner, launch_info=launch_info)
+    check(
+        "upload path: launch_info path_namespace hint 生效",
+        result == src.as_posix(),
+        repr(result),
+    )
+
+
+def test_browser_upload_path_rejects_remote_file_access_mode() -> None:
+    """provider 明确声明 remote 文件访问时，应直接报错。"""
+    owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    launch_info = {
+        "provider": "remote-grid",
+        "provider_metadata": {"file_access_mode": "remote"},
+    }
+    with tempfile.NamedTemporaryFile() as f:
+        try:
+            browser_upload_path(f.name, owner, launch_info=launch_info)
+        except RuntimeError as exc:
+            check(
+                "upload path: remote provider 直接失败",
+                "remote-grid" in str(exc),
+                str(exc),
+            )
+        else:
+            check("upload path: remote provider 直接失败", False, "expected RuntimeError")
+
+
+def test_get_wsl_distro_name_falls_back_to_wsl_exe() -> None:
+    """当环境变量缺失时，应允许通过 wsl.exe 回退获取 distro 名。"""
+    with _mock.patch.dict(os.environ, {"WSL_DISTRO_NAME": ""}, clear=False), _mock.patch.object(
+        _utils_mod.subprocess,
+        "check_output",
+        return_value="TestDistro\n",
+        create=True,
+    ):
+        result = _utils_mod._get_wsl_distro_name()
+    check("upload path: WSL distro 可通过 wsl.exe 回退获取", result == "TestDistro", repr(result))
+
+
+def test_browser_upload_path_wsl_distro_fallback_reaches_unc_output() -> None:
+    """wsl.exe 回退得到的 distro 名必须真正进入最终 UNC 输出。"""
+    owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    with tempfile.NamedTemporaryFile() as f, _mock.patch.dict(
+        os.environ, {"WSL_DISTRO_NAME": ""}, clear=False
+    ), _mock.patch.object(
+        _utils_mod.subprocess,
+        "check_output",
+        return_value="TestDistro\n",
+        create=True,
+    ):
+        result = browser_upload_path(
+            Path(f.name).resolve(),
+            owner,
+            launch_info={"provider_metadata": {"browser_os": "windows"}},
+        )
+    check(
+        "upload path: wsl.exe 回退结果真正进入最终 UNC 输出",
+        result.startswith("\\\\wsl$\\TestDistro\\"),
+        repr(result),
+    )
+
+
+def test_browser_upload_path_windows_browser_requires_distro_for_posix_path() -> None:
+    """Windows 浏览器消费 POSIX 路径时，拿不到 distro 应直接失败。"""
+    owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    with tempfile.NamedTemporaryFile() as f, _mock.patch.dict(
+        os.environ, {"WSL_DISTRO_NAME": ""}, clear=False
+    ), _mock.patch.object(
+        _utils_mod.subprocess,
+        "check_output",
+        side_effect=RuntimeError("missing wsl.exe"),
+        create=True,
+    ):
+        try:
+            browser_upload_path(
+                Path(f.name).resolve(),
+                owner,
+                launch_info={"provider_metadata": {"browser_os": "windows"}},
+            )
+        except RuntimeError:
+            check("upload path: 缺 distro 时直接失败", True)
+        else:
+            check("upload path: 缺 distro 时直接失败", False, "expected RuntimeError")
+
+
 def test_browser_download_path_windows_backslash() -> None:
     """Windows 浏览器下载目录应使用反斜杠路径。
 
@@ -1080,6 +1545,26 @@ def test_upload_file_input_strategy() -> None:
         check("upload: file input 补发 change", any("change" in s for s in ele.js_calls), repr(ele.js_calls))
 
 
+def test_upload_file_passes_launch_info_to_browser_upload_path() -> None:
+    """upload_file() 应把 launch_info 透传给 browser_upload_path()."""
+    ele = _FakeElement("input", "file", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    launch_info = {"provider": "chrome-cdp", "provider_metadata": {"browser_os": "windows"}}
+    captured: dict[str, object] = {}
+
+    def _fake_browser_upload_path(path, obj=None, launch_info=None):
+        captured["path"] = path
+        captured["obj"] = obj
+        captured["launch_info"] = launch_info
+        return str(path)
+
+    with tempfile.NamedTemporaryFile() as f, _mock.patch.object(
+        _utils_mod, "browser_upload_path", side_effect=_fake_browser_upload_path
+    ):
+        upload_file(ele, f.name, launch_info=launch_info)
+
+    check("upload: launch_info 已透传", captured.get("launch_info") == launch_info, repr(captured))
+
+
 def test_upload_file_chooser_strategy() -> None:
     """chooser 按钮先 set.upload_files()，再走原生点击与等待。"""
     ele = _FakeElement("button", "", "Mozilla/5.0 (X11; Linux x86_64)")
@@ -1093,13 +1578,13 @@ def test_upload_file_chooser_strategy() -> None:
 
 def test_download_file_wrapper() -> None:
     """跨 OS 时 download_file() 应走 raw CDP fallback。"""
-    ele = _FakeElement("a", "", "Mozilla/5.0 (X11; Linux x86_64)")
+    ele = _FakeElement("a", "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    launch_info = {"provider": "chrome-cdp", "provider_metadata": {"browser_os": "windows"}}
     captured: dict[str, object] = {}
 
-    def _fake_set_download_path(target, browser_path: str, new_tab=None) -> None:
+    def _fake_set_download_path(target, browser_path: str) -> None:
         captured["target"] = target
         captured["browser_path"] = browser_path
-        captured["new_tab"] = new_tab
         target.owner._browser._download_path = browser_path
         target.owner._download_path = browser_path
 
@@ -1107,12 +1592,10 @@ def test_download_file_wrapper() -> None:
         _utils_mod, "_set_browser_download_path", _fake_set_download_path
     ), _mock.patch.object(
         _utils_mod, "_wait_download_complete", lambda *args, **kwargs: Path(d) / "report.txt"
-    ), _mock.patch.object(
-        _utils_mod, "_prefer_dp_download", return_value=False
     ):
-        final_path = download_file(ele, d, rename="report.txt", timeout=9)
+        final_path = download_file(ele, d, rename="report.txt", timeout=9, launch_info=launch_info)
 
-    expected = browser_download_path(Path(d), ele)
+    expected = browser_download_path(Path(d), ele, launch_info=launch_info)
     check("download raw: 目录路径已规范化", captured.get("browser_path") == expected, repr(captured))
     check("download raw: 走原生点击", ele.click_calls == [False], repr(ele.click_calls))
     check("download raw: 返回最终路径", Path(final_path).name == "report.txt", repr(final_path))
@@ -1137,19 +1620,296 @@ def test_download_file_wrapper() -> None:
     )
 
 
-def test_download_file_dp_first() -> None:
-    """同 OS 场景优先走 DP 下载管理，失败再由外层 fallback。"""
-    ele = _FakeElement("a", "", "Mozilla/5.0 (X11; Linux x86_64)")
+def test_download_file_raw_cdp_prepares_fetch_rename_for_chrome_cdp() -> None:
+    """chrome-cdp 的 raw fallback 应在下载任务创建前通过 Fetch 改 suggested filename。"""
+    ele = _FakeElement("a", "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    launch_info = {"provider": "chrome-cdp", "provider_metadata": {"browser_os": "windows"}}
+
+    def _fake_click(_ele, timeout=10):
+        callback = _ele.owner.driver_callbacks.get("Fetch.requestPaused")
+        if callback:
+            callback(
+                requestId="req-1",
+                responseStatusCode=200,
+                responseHeaders=[
+                    {"name": "Content-Type", "value": "text/plain"},
+                    {"name": "Content-Disposition", "value": 'attachment; filename=\"server-name.txt\"'},
+                ],
+            )
+        _ele.click_calls.append(False)
+        return _ele
+
     with tempfile.TemporaryDirectory() as d, _mock.patch.object(
-        _utils_mod, "_wait_download_complete", lambda *args, **kwargs: Path(d) / "report.txt"
+        _utils_mod, "browser_download_path", return_value=r"G:\fake-downloads"
     ), _mock.patch.object(
-        _utils_mod, "_prefer_dp_download", return_value=True
+        _utils_mod, "_set_browser_download_path", return_value=None
+    ), _mock.patch.object(
+        _utils_mod, "_wait_download_complete", return_value=Path(d) / "renamed.txt"
+    ), _mock.patch.object(
+        _utils_mod, "native_click", side_effect=_fake_click
+    ):
+        download_file(ele, d, rename="renamed.txt", timeout=9, launch_info=launch_info)
+
+    check(
+        "download raw: Fetch.enable 已调用",
+        any(method == "Fetch.enable" for method, _ in ele.owner.page_cdp_calls),
+        repr(ele.owner.page_cdp_calls),
+    )
+    check(
+        "download raw: continueResponse 写入目标文件名",
+        any(
+            method == "Fetch.continueResponse"
+            and "renamed.txt" in _json.dumps(kwargs, ensure_ascii=False)
+            for method, kwargs in ele.owner.page_cdp_calls
+        ),
+        repr(ele.owner.page_cdp_calls),
+    )
+    check(
+        "download raw: Fetch.disable 已调用",
+        any(method == "Fetch.disable" for method, _ in ele.owner.page_cdp_calls),
+        repr(ele.owner.page_cdp_calls),
+    )
+
+
+def test_download_file_raw_cdp_prepares_fetch_rename_for_cdp_capable_provider() -> None:
+    """下载改名增强应基于 CDP 能力而不是绑死某个 provider 名。"""
+    ele = _FakeElement("a", "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    launch_info = {"provider": "custom-grid", "provider_metadata": {"browser_os": "windows"}}
+
+    def _fake_click(_ele, timeout=10):
+        callback = _ele.owner.driver_callbacks.get("Fetch.requestPaused")
+        if callback:
+            callback(
+                requestId="req-2",
+                responseStatusCode=200,
+                responseHeaders=[
+                    {"name": "Content-Type", "value": "text/plain"},
+                    {"name": "Content-Disposition", "value": 'attachment; filename=\"server-name.txt\"'},
+                ],
+            )
+        _ele.click_calls.append(False)
+        return _ele
+
+    with tempfile.TemporaryDirectory() as d, _mock.patch.object(
+        _utils_mod, "browser_download_path", return_value=r"G:\fake-downloads"
+    ), _mock.patch.object(
+        _utils_mod, "_set_browser_download_path", return_value=None
+    ), _mock.patch.object(
+        _utils_mod, "_wait_download_complete", return_value=Path(d) / "renamed.txt"
+    ), _mock.patch.object(
+        _utils_mod, "native_click", side_effect=_fake_click
+    ):
+        download_file(ele, d, rename="renamed.txt", timeout=9, launch_info=launch_info)
+
+    check(
+        "download raw: 非 chrome-cdp provider 也会启用 Fetch 改名",
+        any(method == "Fetch.enable" for method, _ in ele.owner.page_cdp_calls),
+        repr(ele.owner.page_cdp_calls),
+    )
+    check(
+        "download raw: 非 chrome-cdp provider 也会写入目标文件名",
+        any(
+            method == "Fetch.continueResponse"
+            and "renamed.txt" in _json.dumps(kwargs, ensure_ascii=False)
+            for method, kwargs in ele.owner.page_cdp_calls
+        ),
+        repr(ele.owner.page_cdp_calls),
+    )
+
+
+def test_download_file_raw_cdp_fetch_rename_failure_falls_back() -> None:
+    """下载改名增强初始化失败时，download_file() 应继续下载，不阻塞主流程。"""
+    ele = _FakeElement("a", "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    launch_info = {"provider": "chrome-cdp", "provider_metadata": {"browser_os": "windows"}}
+
+    with tempfile.TemporaryDirectory() as d, _mock.patch.object(
+        _utils_mod, "browser_download_path", return_value=r"G:\fake-downloads"
+    ), _mock.patch.object(
+        _utils_mod, "_set_browser_download_path", return_value=None
+    ), _mock.patch.object(
+        _utils_mod, "_wait_download_complete", return_value=Path(d) / "renamed.txt"
+    ), _mock.patch.object(
+        _utils_mod, "prepare_download_interceptor", side_effect=RuntimeError("fetch unsupported")
+    ):
+        final_path = download_file(ele, d, rename="renamed.txt", timeout=9, launch_info=launch_info)
+
+    check("download raw: Fetch 失败仍返回最终路径", Path(final_path).name == "renamed.txt", repr(final_path))
+
+
+def test_download_file_passes_launch_info_to_browser_download_path() -> None:
+    """download_file() 应把 launch_info 透传给 browser_download_path()."""
+    ele = _FakeElement("a", "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    launch_info = {"provider": "chrome-cdp", "provider_metadata": {"browser_os": "windows"}}
+    captured: dict[str, object] = {}
+
+    def _fake_browser_download_path(path, obj=None, launch_info=None):
+        captured["path"] = path
+        captured["obj"] = obj
+        captured["launch_info"] = launch_info
+        return r"G:\fake-downloads"
+
+    with tempfile.TemporaryDirectory() as d, _mock.patch.object(
+        _utils_mod, "browser_download_path", side_effect=_fake_browser_download_path
+    ), _mock.patch.object(
+        _utils_mod, "_set_browser_download_path", return_value=None
+    ), _mock.patch.object(
+        _utils_mod, "_wait_download_complete", return_value=Path(d) / "report.txt"
+    ):
+        download_file(ele, d, rename="report.txt", timeout=9, launch_info=launch_info)
+
+    check("download: launch_info 已透传", captured.get("launch_info") == launch_info, repr(captured))
+
+
+def test_download_file_same_os_still_uses_raw_cdp_path() -> None:
+    """即使同 OS，也应只走统一 raw/CDP 下载主路径，不再走 DP 下载管理。"""
+    ele = _FakeElement("a", "", "Mozilla/5.0 (X11; Linux x86_64)")
+    captured: dict[str, object] = {}
+
+    def _fake_set_download_path(target, browser_path: str, new_tab=None) -> None:
+        captured["browser_path"] = browser_path
+        target.owner._browser._download_path = browser_path
+        target.owner._download_path = browser_path
+
+    with tempfile.TemporaryDirectory() as d, _mock.patch.object(
+        _utils_mod, "_set_browser_download_path", side_effect=_fake_set_download_path
+    ), _mock.patch.object(
+        _utils_mod, "_wait_download_complete", lambda *args, **kwargs: Path(d) / "report.txt"
     ):
         final_path = download_file(ele, d, rename="report.txt", timeout=9)
 
-    check("download dp: 透传 save_path", ele.download_calls[0]["save_path"] == str(Path(d).resolve()), repr(ele.download_calls))
-    check("download dp: rename 透传", ele.download_calls[0]["rename"] == "report.txt", repr(ele.download_calls))
-    check("download dp: 返回最终路径", Path(final_path).name == "report.txt", repr(final_path))
+    check("download unified: 不走 DP 下载管理", ele.download_calls == [], repr(ele.download_calls))
+    check("download unified: 仍走原生点击", ele.click_calls == [False], repr(ele.click_calls))
+    check("download unified: 设置浏览器下载目录", captured.get("browser_path") == str(Path(d).resolve()), repr(captured))
+    check("download unified: 返回最终路径", Path(final_path).name == "report.txt", repr(final_path))
+
+
+def test_download_file_by_js_click_strategy() -> None:
+    """by_js=True 时，download_file() 应走显式 JS click 分支。"""
+    ele = _FakeElement("a", "", "Mozilla/5.0 (X11; Linux x86_64)", {
+        "href": "http://example.com/file.txt",
+        "download": "file.txt",
+    })
+    with tempfile.TemporaryDirectory() as d, _mock.patch.object(
+        _utils_mod, "_wait_download_complete", return_value=Path(d) / "file.txt"
+    ):
+        download_file(ele, d, rename="file.txt", timeout=1, by_js=True)
+    check("download by_js: 走 JS click 分支", ele.click_calls == [True], repr(ele.click_calls))
+
+
+def test_download_file_signature_removes_new_tab() -> None:
+    """download_file() 的公开签名中不再出现 new_tab。"""
+    params = inspect.signature(download_file).parameters
+    check("download_file: 签名中不再出现 new_tab", "new_tab" not in params, repr(list(params)))
+
+
+def test_download_interceptor_skips_non_download_response() -> None:
+    """独立下载 correlation 层不应污染非下载响应。"""
+    try:
+        _download_corr = _load_download_correlation_module()
+    except Exception as exc:
+        check("download corr: 模块可加载", False, str(exc))
+        return
+
+    owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    interceptor = _download_corr.prepare_download_interceptor(
+        owner,
+        _download_corr.DownloadIntent(
+            target_name="report.txt",
+            rename_requested=True,
+            href="https://example.com/report.txt",
+            download_attr="report.txt",
+        ),
+    )
+    if interceptor is None:
+        check("download corr: 非下载响应不注入 Content-Disposition", False, "prepare_download_interceptor returned None")
+        return
+    interceptor.enable()
+    owner.driver_callbacks["Fetch.requestPaused"](
+        requestId="req-css",
+        request={"url": "https://example.com/app.css"},
+        responseStatusCode=200,
+        responseHeaders=[{"name": "Content-Type", "value": "text/css"}],
+    )
+    interceptor.cleanup()
+    check(
+        "download corr: 非下载响应不注入 Content-Disposition",
+        not any(
+            method == "Fetch.continueResponse"
+            and "Content-Disposition" in _json.dumps(kwargs, ensure_ascii=False)
+            for method, kwargs in owner.page_cdp_calls
+        ),
+        repr(owner.page_cdp_calls),
+    )
+
+
+def test_download_interceptor_one_shot_match() -> None:
+    """命中一次后，后续 response 不应继续改写。"""
+    try:
+        _download_corr = _load_download_correlation_module()
+    except Exception as exc:
+        check("download corr: one-shot match 可加载模块", False, str(exc))
+        return
+
+    owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    interceptor = _download_corr.prepare_download_interceptor(
+        owner,
+        _download_corr.DownloadIntent(
+            target_name="report.txt",
+            rename_requested=True,
+            href="https://example.com/report.txt",
+            download_attr="report.txt",
+        ),
+    )
+    if interceptor is None:
+        check("download corr: 命中一次后后续 response 不再改写", False, "prepare_download_interceptor returned None")
+        return
+    interceptor.enable()
+    callback = owner.driver_callbacks["Fetch.requestPaused"]
+    callback(
+        requestId="req-1",
+        request={"url": "https://example.com/report.txt"},
+        responseStatusCode=200,
+        responseHeaders=[{"name": "Content-Disposition", "value": 'attachment; filename="server.txt"'}],
+    )
+    callback(
+        requestId="req-2",
+        request={"url": "https://example.com/report.txt?again=1"},
+        responseStatusCode=200,
+        responseHeaders=[{"name": "Content-Disposition", "value": 'attachment; filename="second.txt"'}],
+    )
+    interceptor.cleanup()
+    rewritten = [
+        kwargs for method, kwargs in owner.page_cdp_calls
+        if method == "Fetch.continueResponse"
+        and any(item.get("value") == 'attachment; filename="report.txt"' for item in kwargs.get("responseHeaders", []))
+    ]
+    preserved_second = any(
+        method == "Fetch.continueResponse"
+        and any(item.get("value") == 'attachment; filename="second.txt"' for item in kwargs.get("responseHeaders", []))
+        for method, kwargs in owner.page_cdp_calls
+    )
+    check("download corr: 命中一次后后续 response 不再改写", len(rewritten) == 1 and preserved_second, repr(owner.page_cdp_calls))
+
+
+def test_download_interceptor_not_enabled_without_rename_request() -> None:
+    """没有 rename/suffix 需求时，不应启用下载拦截增强。"""
+    try:
+        _download_corr = _load_download_correlation_module()
+    except Exception as exc:
+        check("download corr: 无 rename 时不启用增强可加载模块", False, str(exc))
+        return
+
+    owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    interceptor = _download_corr.prepare_download_interceptor(
+        owner,
+        _download_corr.DownloadIntent(
+            target_name="report.txt",
+            rename_requested=False,
+            href="https://example.com/report.txt",
+            download_attr="report.txt",
+        ),
+    )
+    check("download corr: 无 rename 时不启用增强", interceptor is None, repr(interceptor))
 
 
 def test_download_file_data_url_direct_save() -> None:
@@ -1170,6 +1930,34 @@ def test_download_file_data_url_direct_save() -> None:
         check("download data: 文件名正确", final_path.name == "fixture.txt", final_path.name)
         check("download data: 内容正确", final_path.read_text(encoding="utf-8") == "hello dp\n", final_path.read_text(encoding="utf-8"))
         check("download data: 不走浏览器下载管理", ele.download_calls == [], repr(ele.download_calls))
+
+
+def test_download_file_data_url_rejects_remote_file_access_mode() -> None:
+    """即使是 data: 下载，provider 明确声明 remote 时也应在 helper 入口直接失败。"""
+    ele = _FakeElement(
+        "a",
+        "",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        attrs={
+            "href": "data:text/plain;charset=utf-8,hello%20dp%0A",
+            "download": "fixture.txt",
+        },
+    )
+    launch_info = {
+        "provider": "remote-grid",
+        "provider_metadata": {"file_access_mode": "remote"},
+    }
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            download_file(ele, d, launch_info=launch_info)
+        except RuntimeError as exc:
+            check(
+                "download data: remote provider 直接失败",
+                "remote-grid" in str(exc),
+                str(exc),
+            )
+        else:
+            check("download data: remote provider 直接失败", False, "expected RuntimeError")
 
 
 # ── doctor 其他行为测试 ───────────────────────────────────────────────────────
@@ -1338,6 +2126,165 @@ def test_validate_missing_upload_helper() -> None:
                      lambda: _vb.validate_cross_file_consistency(root))
 
 
+def _create_required_bundle_tree(root: Path, *, omit: set[str] | None = None) -> None:
+    """按 validate_bundle.REQUIRED_FILES 创建最小 bundle 目录树。"""
+    omitted = omit or set()
+    for rel in _vb.REQUIRED_FILES:
+        if rel in omitted:
+            continue
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.suffix in {".py", ".md", ".json", ".gitignore"}:
+            path.write_text("", encoding="utf-8")
+        else:
+            path.touch()
+
+
+def test_validate_missing_provider_contract_reference_required() -> None:
+    """references/provider-contract.md 缺失时 validate_required_files 应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _create_required_bundle_tree(root, omit={"references/provider-contract.md"})
+        _expect_fail(
+            "validate: 缺少 provider-contract.md 应失败",
+            lambda: _vb.validate_required_files(root),
+        )
+
+
+def test_validate_missing_cdp_port_template_required() -> None:
+    """templates/providers/cdp-port.py 缺失时 validate_required_files 应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _create_required_bundle_tree(root, omit={"templates/providers/cdp-port.py"})
+        _expect_fail(
+            "validate: 缺少 templates/providers/cdp-port.py 应失败",
+            lambda: _vb.validate_required_files(root),
+        )
+
+
+def test_validate_missing_download_correlation_template_required() -> None:
+    """templates/download_correlation.py 缺失时 validate_required_files 应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _create_required_bundle_tree(root, omit={"templates/download_correlation.py"})
+        _expect_fail(
+            "validate: 缺少 templates/download_correlation.py 应失败",
+            lambda: _vb.validate_required_files(root),
+        )
+
+
+def test_validate_removed_connect_wrappers_not_referenced_in_docs() -> None:
+    """canonical docs 引用 removed connect wrapper 时 validate_removed_connect_wrappers 应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _create_required_bundle_tree(root)
+        for rel in (
+            "SKILL.md",
+            "references/workflows.md",
+            "references/mode-selection.md",
+            "evals/smoke-checklist.md",
+        ):
+            (root / rel).write_text("# doc\n", encoding="utf-8")
+        (root / "references" / "workflows.md").write_text("connect_web_page()\n", encoding="utf-8")
+        _expect_fail(
+            "validate: canonical docs 不应再引用 removed connect wrappers",
+            lambda: _vb.validate_removed_connect_wrappers(root),
+        )
+
+
+def _build_workflows_md(upload_contract: str = "", download_contract: str = "") -> str:
+    return (
+        "# Workflow 代码模板\n\n"
+        "## Workflow 5：文件上传（upload）\n\n"
+        "**contract**：\n"
+        f"{upload_contract}\n\n"
+        "## Workflow 6：文件下载（download）\n\n"
+        "**contract**：\n"
+        f"{download_contract}\n"
+    )
+
+
+def test_validate_workflow_file_helper_contracts_require_upload_remote_fail_fast_boundary() -> None:
+    """upload contract 若只写“更安全”，未声明 remote fail-fast，应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _create_required_bundle_tree(root)
+        (root / "references" / "workflows.md").write_text(
+            _build_workflows_md(
+                upload_contract=(
+                    "- 对直接 `input[type=file]`，优先 `upload_file(..., launch_info=launch_info)`；"
+                    "它会处理跨平台路径，并在提供 `launch_info` 时结合 provider hints "
+                    "做更安全的本地文件访问判断"
+                ),
+                download_contract=(
+                    "- 对下载目录优先使用 `download_file(..., launch_info=launch_info)`\n"
+                    "- provider 若显式声明不支持本地文件访问，helper 会直接报错而不是继续盲猜路径"
+                ),
+            ),
+            encoding="utf-8",
+        )
+        _expect_fail(
+            "validate: workflow upload contract 缺少 remote fail-fast 边界应失败",
+            lambda: _vb.validate_workflow_file_helper_contracts(root),
+        )
+
+
+def test_validate_workflow_file_helper_contracts_require_download_remote_fail_fast_boundary() -> None:
+    """download contract 若未声明 remote fail-fast，应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _create_required_bundle_tree(root)
+        (root / "references" / "workflows.md").write_text(
+            _build_workflows_md(
+                upload_contract=(
+                    "- 对直接 `input[type=file]`，优先 `upload_file(..., launch_info=launch_info)`；"
+                    "若 provider 明确声明 remote 或不支持本地文件访问，则 helper 直接报错"
+                ),
+                download_contract=(
+                    "- 对下载目录优先使用 `download_file(..., launch_info=launch_info)`\n"
+                    "- helper 统一走浏览器下载目录 + 原生点击 + 完成等待的 CDP 下载主路径\n"
+                    "- 对支持的 provider / 浏览器链路，helper 会尽量在创建下载任务时改写目标文件名"
+                ),
+            ),
+            encoding="utf-8",
+        )
+        _expect_fail(
+            "validate: workflow download contract 缺少 remote fail-fast 边界应失败",
+            lambda: _vb.validate_workflow_file_helper_contracts(root),
+        )
+
+
+def test_validate_workflow_file_helper_contracts_allow_remote_fail_fast_boundary() -> None:
+    """upload/download contract 写出 remote fail-fast 边界时应通过。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _create_required_bundle_tree(root)
+        (root / "references" / "workflows.md").write_text(
+            _build_workflows_md(
+                upload_contract=(
+                    "- 对直接 `input[type=file]`，优先 `upload_file(..., launch_info=launch_info)`；"
+                    "它会处理跨平台路径，并在提供 `launch_info` 时结合 provider hints 判断本地文件访问能力；"
+                    "若 provider 明确声明 remote 或不支持本地文件访问，则 helper 直接报错"
+                ),
+                download_contract=(
+                    "- 对下载目录优先使用 `download_file(..., launch_info=launch_info)`\n"
+                    "- helper 统一走浏览器下载目录 + 原生点击 + 完成等待的 CDP 下载主路径\n"
+                    "- provider 若显式声明 remote 或不支持本地文件访问，helper 会直接报错而不是继续盲猜路径"
+                ),
+            ),
+            encoding="utf-8",
+        )
+        try:
+            _vb.validate_workflow_file_helper_contracts(root)
+            check("validate: workflow upload/download remote fail-fast prose 可通过", True)
+        except SystemExit:
+            check(
+                "validate: workflow upload/download remote fail-fast prose 可通过",
+                False,
+                "不应触发 SystemExit",
+            )
+
+
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -1385,11 +2332,19 @@ def main() -> int:
     test_doctor_check_bundle_version_missing()
     test_doctor_check_state_corrupted()
     test_doctor_check_python_not_executable()
+    test_doctor_check_requires_selected_default_provider_file()
+    test_doctor_check_requires_download_correlation_lib()
+    test_doctor_check_reports_corrupted_config()
     test_doctor_write_state_fields()
 
     print("\n── doctor.init() ──")
     test_doctor_init_garbage_venv_no_traceback()
     test_doctor_init_lib_overwrite_and_state()
+    test_doctor_init_repairs_blank_default_provider()
+    test_doctor_init_normalizes_default_provider()
+    test_doctor_init_fails_without_managed_provider_template()
+    test_doctor_init_fails_when_selected_default_provider_file_missing()
+    test_doctor_init_bundle_only_refresh_skips_runtime_sync()
 
     print("\n── normalize_site_name ──")
     test_normalize_site_name()
@@ -1400,12 +2355,29 @@ def main() -> int:
     test_browser_upload_path_wsl_unc()
     test_browser_upload_path_linux_passthrough()
     test_browser_upload_path_ua_expr_probe()
+    test_browser_upload_path_prefers_launch_info_browser_os_hint()
+    test_browser_upload_path_prefers_launch_info_path_namespace_hint()
+    test_browser_upload_path_rejects_remote_file_access_mode()
+    test_get_wsl_distro_name_falls_back_to_wsl_exe()
+    test_browser_upload_path_wsl_distro_fallback_reaches_unc_output()
+    test_browser_upload_path_windows_browser_requires_distro_for_posix_path()
     test_browser_download_path_windows_backslash()
     test_upload_file_input_strategy()
+    test_upload_file_passes_launch_info_to_browser_upload_path()
     test_upload_file_chooser_strategy()
     test_download_file_wrapper()
-    test_download_file_dp_first()
+    test_download_file_raw_cdp_prepares_fetch_rename_for_chrome_cdp()
+    test_download_file_raw_cdp_prepares_fetch_rename_for_cdp_capable_provider()
+    test_download_file_raw_cdp_fetch_rename_failure_falls_back()
+    test_download_file_passes_launch_info_to_browser_download_path()
+    test_download_file_same_os_still_uses_raw_cdp_path()
+    test_download_file_by_js_click_strategy()
+    test_download_file_signature_removes_new_tab()
+    test_download_interceptor_skips_non_download_response()
+    test_download_interceptor_one_shot_match()
+    test_download_interceptor_not_enabled_without_rename_request()
     test_download_file_data_url_direct_save()
+    test_download_file_data_url_rejects_remote_file_access_mode()
 
     print("\n── doctor 其他行为 ──")
     test_doctor_init_always_rewrites_readme()
@@ -1420,6 +2392,13 @@ def main() -> int:
     test_validate_agents_text_rejected()
     test_validate_missing_site_run_dir()
     test_validate_missing_upload_helper()
+    test_validate_missing_provider_contract_reference_required()
+    test_validate_missing_cdp_port_template_required()
+    test_validate_missing_download_correlation_template_required()
+    test_validate_removed_connect_wrappers_not_referenced_in_docs()
+    test_validate_workflow_file_helper_contracts_require_upload_remote_fail_fast_boundary()
+    test_validate_workflow_file_helper_contracts_require_download_remote_fail_fast_boundary()
+    test_validate_workflow_file_helper_contracts_allow_remote_fail_fast_boundary()
 
     print("\n── P0 新增：download_file 目录自动创建 ──")
     test_download_file_creates_nonexistent_dir()
@@ -1431,6 +2410,12 @@ def main() -> int:
     print("\n── P0 新增：smoke _check_workspace 可执行性 ──")
     test_smoke_check_workspace_python_not_executable()
     test_smoke_check_workspace_no_drissionpage()
+    test_smoke_check_workspace_requires_cdp_port_provider()
+    test_smoke_check_workspace_requires_default_provider()
+    test_smoke_check_workspace_requires_selected_default_provider_file()
+    test_smoke_check_workspace_requires_matching_state_versions()
+    test_smoke_get_default_provider_normalizes_value()
+    test_smoke_main_requires_explicit_port_for_cdp_port()
 
     print("\n── P1/P2 新增：_rewrite_header_fields 三引号边界 ──")
     test_rewrite_header_no_triple_quote_leak()
@@ -1446,14 +2431,32 @@ def main() -> int:
     test_get_user_agent_fallback_on_typeerror()
     test_get_user_agent_returns_empty_on_all_errors()
 
-    print("\n── P1-3：fresh_tab 连接语义 ──")
-    test_fresh_tab_tab_id_binding()
+    print("\n── P1-3：connect API surface ──")
+    test_start_profile_and_connect_browser_fresh_tab_binds_tab_id()
+    test_removed_legacy_connect_wrappers_are_absent()
+    test_get_default_browser_provider_treats_non_string_as_uninitialized()
+
+    print("\n── provider loader ──")
+    test_browser_provider_loader_finds_workspace_provider()
+    test_browser_provider_loader_rejects_normalized_name_conflict()
+    test_workspace_provider_start_profile_and_connect()
+    test_provider_loader_rejects_missing_contract()
 
     print("\n── validate_rule_markers 章节内检查 ──")
     test_validate_rule_markers_port_rule_needs_section()
     test_validate_rule_markers_list_scripts_rule_needs_section()
     test_validate_rule_markers_workspace_root_rule_needs_section()
     test_validate_rule_markers_allows_rephrased_prose()
+    test_validate_rule_markers_preflight_requires_workspace_contract_tokens()
+    test_validate_rule_markers_preflight_requires_managed_lib_markers()
+    test_validate_rule_markers_preflight_requires_download_correlation_marker()
+    test_validate_rule_markers_preflight_requires_illegal_provider_boundary()
+    test_validate_rule_markers_preflight_requires_selected_provider_presence_boundary()
+    test_validate_rule_markers_file_helper_requires_remote_fail_fast_boundary()
+    test_validate_rule_markers_allows_preflight_prose_with_repair_boundary()
+    test_validate_smoke_checklist_requires_non_string_repair_boundary()
+    test_validate_smoke_checklist_requires_selected_provider_snake_case_boundary()
+    test_validate_smoke_checklist_allows_complete_preflight_prose()
 
     print()
     if _failed:
@@ -1482,8 +2485,6 @@ def test_download_file_creates_nonexistent_dir() -> None:
             with _mock.patch.object(
                 _utils_mod, "_wait_download_complete",
                 side_effect=TimeoutError("no browser"),
-            ), _mock.patch.object(
-                _utils_mod, "_prefer_dp_download", return_value=False
             ), _mock.patch.object(
                 _utils_mod, "_set_browser_download_path", return_value=None
             ):
@@ -1629,6 +2630,221 @@ def test_smoke_check_workspace_no_drissionpage() -> None:
         finally:
             smoke_mod.WORKSPACE = orig_ws
             smoke_mod.venv_python = orig_vp
+
+
+def test_smoke_check_workspace_requires_cdp_port_provider() -> None:
+    """smoke._check_workspace() 缺少 runtime-managed cdp-port provider 时应返回错误。"""
+    smoke_mod = _load_smoke_module()
+    with tempfile.TemporaryDirectory() as d:
+        dp = Path(d) / ".dp"
+        fake_py = dp / ".venv" / "bin" / "python"
+        fake_py.parent.mkdir(parents=True, exist_ok=True)
+        fake_py.write_text("#!/bin/sh\n", encoding="utf-8")
+        for name in ("connect.py", "download_correlation.py", "output.py", "utils.py", "_dp_compat.py"):
+            path = dp / "lib" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        (dp / "config.json").write_text('{"default_provider":"cdp-port"}', encoding="utf-8")
+
+        orig_ws = smoke_mod.WORKSPACE
+        orig_vp = smoke_mod.venv_python
+        orig_run = smoke_mod.subprocess.run
+        smoke_mod.WORKSPACE = dp
+        smoke_mod.venv_python = lambda: fake_py
+        smoke_mod.subprocess.run = lambda *a, **kw: SimpleNamespace(returncode=0, stdout="", stderr="")
+        try:
+            result = smoke_mod._check_workspace()
+            check(
+                "smoke: 缺少 cdp-port provider 返回错误字符串",
+                result is not None and "cdp-port.py" in result,
+                repr(result),
+            )
+        finally:
+            smoke_mod.WORKSPACE = orig_ws
+            smoke_mod.venv_python = orig_vp
+            smoke_mod.subprocess.run = orig_run
+
+
+def test_smoke_check_workspace_requires_default_provider() -> None:
+    """smoke._check_workspace() 缺少 default_provider 时应返回错误。"""
+    smoke_mod = _load_smoke_module()
+    with tempfile.TemporaryDirectory() as d:
+        dp = Path(d) / ".dp"
+        fake_py = dp / ".venv" / "bin" / "python"
+        fake_py.parent.mkdir(parents=True, exist_ok=True)
+        fake_py.write_text("#!/bin/sh\n", encoding="utf-8")
+        for name in ("connect.py", "download_correlation.py", "output.py", "utils.py", "_dp_compat.py"):
+            path = dp / "lib" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        providers = dp / "providers"
+        providers.mkdir(parents=True, exist_ok=True)
+        (providers / "cdp-port.py").write_text("", encoding="utf-8")
+        (dp / "config.json").write_text("{}", encoding="utf-8")
+
+        orig_ws = smoke_mod.WORKSPACE
+        orig_vp = smoke_mod.venv_python
+        orig_run = smoke_mod.subprocess.run
+        smoke_mod.WORKSPACE = dp
+        smoke_mod.venv_python = lambda: fake_py
+        smoke_mod.subprocess.run = lambda *a, **kw: SimpleNamespace(returncode=0, stdout="", stderr="")
+        try:
+            result = smoke_mod._check_workspace()
+            check(
+                "smoke: 缺少 default_provider 返回错误字符串",
+                result is not None and "default_provider" in result,
+                repr(result),
+            )
+        finally:
+            smoke_mod.WORKSPACE = orig_ws
+            smoke_mod.venv_python = orig_vp
+            smoke_mod.subprocess.run = orig_run
+
+
+def test_smoke_check_workspace_requires_selected_default_provider_file() -> None:
+    """smoke._check_workspace() 缺少当前默认 provider 文件时应返回错误。"""
+    smoke_mod = _load_smoke_module()
+    with tempfile.TemporaryDirectory() as d:
+        dp = Path(d) / ".dp"
+        fake_py = _seed_workspace_ready_state(
+            dp,
+            default_provider="adspower",
+            create_selected_provider=False,
+        )
+
+        orig_ws = smoke_mod.WORKSPACE
+        orig_vp = smoke_mod.venv_python
+        orig_run = smoke_mod.subprocess.run
+        smoke_mod.WORKSPACE = dp
+        smoke_mod.venv_python = lambda: fake_py
+        smoke_mod.subprocess.run = lambda *a, **kw: SimpleNamespace(returncode=0, stdout="", stderr="")
+        try:
+            result = smoke_mod._check_workspace()
+            check(
+                "smoke: 缺少当前默认 provider 文件返回错误字符串",
+                result is not None and "adspower" in result,
+                repr(result),
+            )
+        finally:
+            smoke_mod.WORKSPACE = orig_ws
+            smoke_mod.venv_python = orig_vp
+            smoke_mod.subprocess.run = orig_run
+
+
+def test_smoke_check_workspace_requires_matching_state_versions() -> None:
+    """smoke._check_workspace() 遇到旧 state 版本时应返回错误。"""
+    smoke_mod = _load_smoke_module()
+    with tempfile.TemporaryDirectory() as d:
+        dp = Path(d) / ".dp"
+        fake_py = dp / ".venv" / "bin" / "python"
+        fake_py.parent.mkdir(parents=True, exist_ok=True)
+        fake_py.write_text("#!/bin/sh\n", encoding="utf-8")
+        for name in ("connect.py", "download_correlation.py", "output.py", "utils.py", "_dp_compat.py"):
+            path = dp / "lib" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        providers = dp / "providers"
+        providers.mkdir(parents=True, exist_ok=True)
+        (providers / "cdp-port.py").write_text("", encoding="utf-8")
+        (dp / "config.json").write_text('{"default_provider":"cdp-port"}', encoding="utf-8")
+        (dp / "state.json").write_text(
+            '{"runtime_lib_version":"old","bundle_version":"old"}',
+            encoding="utf-8",
+        )
+
+        orig_ws = smoke_mod.WORKSPACE
+        orig_vp = smoke_mod.venv_python
+        orig_run = smoke_mod.subprocess.run
+        smoke_mod.WORKSPACE = dp
+        smoke_mod.venv_python = lambda: fake_py
+        smoke_mod.subprocess.run = lambda *a, **kw: SimpleNamespace(returncode=0, stdout="", stderr="")
+        try:
+            result = smoke_mod._check_workspace()
+            check(
+                "smoke: 旧 state 版本返回错误",
+                result is not None and ("版本" in result or "state" in result),
+                repr(result),
+            )
+        finally:
+            smoke_mod.WORKSPACE = orig_ws
+            smoke_mod.venv_python = orig_vp
+            smoke_mod.subprocess.run = orig_run
+
+
+def test_smoke_get_default_provider_normalizes_value() -> None:
+    """smoke._get_default_provider() 应把大小写/空白变体规范化为 cdp-port。"""
+    smoke_mod = _load_smoke_module()
+    with tempfile.TemporaryDirectory() as d:
+        dp = Path(d) / ".dp"
+        dp.mkdir(parents=True, exist_ok=True)
+        (dp / "config.json").write_text('{"default_provider":" CDP-PORT "}', encoding="utf-8")
+
+        orig_ws = smoke_mod.WORKSPACE
+        smoke_mod.WORKSPACE = dp
+        try:
+            result = smoke_mod._get_default_provider()
+            check(
+                "smoke: default_provider 会被规范化",
+                result == "cdp-port",
+                repr(result),
+            )
+        finally:
+            smoke_mod.WORKSPACE = orig_ws
+
+
+def test_smoke_main_requires_explicit_port_for_cdp_port() -> None:
+    """当默认 provider 为 cdp-port 时，smoke.py 主流程必须要求显式 --port。"""
+    smoke_mod = _load_smoke_module()
+    with tempfile.TemporaryDirectory() as d:
+        dp = Path(d) / ".dp"
+        providers = dp / "providers"
+        providers.mkdir(parents=True, exist_ok=True)
+        (providers / "cdp-port.py").write_text("", encoding="utf-8")
+        (dp / "config.json").write_text('{"default_provider":"cdp-port"}', encoding="utf-8")
+
+        orig_ws = smoke_mod.WORKSPACE
+        orig_check_workspace = smoke_mod._check_workspace
+        orig_check_browser = smoke_mod._check_browser
+        orig_start_fixture_server = smoke_mod._start_fixture_server
+        orig_run_script = smoke_mod._run_script
+        orig_verify_screenshot = smoke_mod._verify_screenshot
+        orig_all_cases = smoke_mod.ALL_CASES
+        orig_browser_cases = smoke_mod.BROWSER_REQUIRED_CASES
+        old_argv = sys.argv
+
+        smoke_mod.WORKSPACE = dp
+        smoke_mod._check_workspace = lambda: None
+        smoke_mod._check_browser = lambda port: True
+        smoke_mod._start_fixture_server = lambda port: SimpleNamespace(shutdown=lambda: None)
+        smoke_mod._run_script = lambda script, port, timeout=60: True
+        smoke_mod._verify_screenshot = lambda: (True, "ok")
+        smoke_mod.ALL_CASES = ["screenshot"]
+        smoke_mod.BROWSER_REQUIRED_CASES = frozenset({"screenshot"})
+        sys.argv = ["smoke.py", "--case", "screenshot"]
+
+        stderr = io.StringIO()
+        try:
+            with redirect_stderr(stderr):
+                try:
+                    smoke_mod.main()
+                except SystemExit as exc:
+                    check(
+                        "smoke: cdp-port 默认 provider 需要显式 --port",
+                        exc.code == 2 and "--port" in stderr.getvalue(),
+                        f"code={exc.code}, stderr={stderr.getvalue()!r}",
+                    )
+                else:
+                    check("smoke: cdp-port 默认 provider 需要显式 --port", False, "main() 未退出")
+        finally:
+            smoke_mod.WORKSPACE = orig_ws
+            smoke_mod._check_workspace = orig_check_workspace
+            smoke_mod._check_browser = orig_check_browser
+            smoke_mod._start_fixture_server = orig_start_fixture_server
+            smoke_mod._run_script = orig_run_script
+            smoke_mod._verify_screenshot = orig_verify_screenshot
+            smoke_mod.ALL_CASES = orig_all_cases
+            smoke_mod.BROWSER_REQUIRED_CASES = orig_browser_cases
+            sys.argv = old_argv
 
 
 # ── P1/P2 新增：_rewrite_header_fields 三引号边界测试 ─────────────────────────
@@ -1807,9 +3023,18 @@ def _load_connect_module():
             _RecordingChromiumPage._instances.append(self)
 
     class _FakeChromiumOptions:
-        def __init__(self, **kwargs): pass
-        def set_address(self, addr): return self
-        def existing_only(self, v): return self
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.address = None
+            self.existing = None
+
+        def set_address(self, addr):
+            self.address = addr
+            return self
+
+        def existing_only(self, v):
+            self.existing = v
+            return self
 
     class _FakeWebPage:
         def __init__(self, mode=None, chromium_options=None):
@@ -1822,16 +3047,18 @@ def _load_connect_module():
     sys.modules["DrissionPage"] = fake_dp
 
     try:
+        sys.modules[spec.name] = mod
         spec.loader.exec_module(mod)
     finally:
         # 还原 DrissionPage（避免污染其他测试）
+        sys.modules.pop(spec.name, None)
         sys.modules.pop("DrissionPage", None)
 
     return mod, _RecordingChromiumPage, _FakeChromium
 
 
-def test_fresh_tab_tab_id_binding() -> None:
-    """验证 connect_browser_fresh_tab() 构造 ChromiumPage 时正确传入了 tab_id。
+def test_start_profile_and_connect_browser_fresh_tab_binds_tab_id() -> None:
+    """验证 provider-first fresh_tab=True 时 ChromiumPage 构造函数正确接收 tab_id。
 
     覆盖范围：本测试通过 monkeypatch 证明 tab_id 参数被传入 ChromiumPage 构造函数。
     未覆盖：DrissionPage 内部是否有单例缓存会在运行时忽略此 tab_id——
@@ -1839,10 +3066,30 @@ def test_fresh_tab_tab_id_binding() -> None:
     """
     connect_mod, RecordingChromiumPage, FakeChromium = _load_connect_module()
     RecordingChromiumPage._instances.clear()
+    old_cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        provider_dir = root / ".dp" / "providers"
+        provider_dir.mkdir(parents=True, exist_ok=True)
+        (provider_dir / "stub-provider.py").write_text(
+            "def start_profile(profile=None, *, base_url=None, timeout=60, extra_params=None):\n"
+            "    return {'debug_address': '127.0.0.1:9222'}\n"
+            "\n"
+            "def extract_debug_address(start_result):\n"
+            "    return start_result['debug_address']\n",
+            encoding="utf-8",
+        )
+        os.chdir(root)
+        try:
+            launch_info, page = connect_mod.start_profile_and_connect_browser(
+                "stub-provider",
+                {},
+                fresh_tab=True,
+            )
+        finally:
+            os.chdir(old_cwd)
 
-    # 调用 connect_browser_fresh_tab（只扫一个端口以加快速度）
-    page = connect_mod.connect_browser_fresh_tab(port="9222")
-
+    check("fresh_tab: launch_info 返回 provider", launch_info.get("provider") == "stub-provider", repr(launch_info))
     check("fresh_tab: 返回了对象", page is not None, repr(page))
 
     # 检查 ChromiumPage 是否被构造，且 tab_id 是传入的（非 None）
@@ -1858,6 +3105,184 @@ def test_fresh_tab_tab_id_binding() -> None:
         check("fresh_tab: ChromiumPage 被构造", False, "未记录到任何 ChromiumPage 实例")
 
 
+def test_removed_legacy_connect_wrappers_are_absent() -> None:
+    """legacy connect_* wrapper 已从公开 API 中移除。"""
+    connect_mod, _, _ = _load_connect_module()
+    names = dir(connect_mod)
+    check("removed api: connect_browser 不存在", not hasattr(connect_mod, "connect_browser"), repr(names))
+    check("removed api: connect_browser_fresh_tab 不存在", not hasattr(connect_mod, "connect_browser_fresh_tab"), repr(names))
+    check("removed api: connect_web_page 不存在", not hasattr(connect_mod, "connect_web_page"), repr(names))
+
+
+def test_get_default_browser_provider_treats_non_string_as_uninitialized() -> None:
+    """runtime 对 non-string default_provider 应与 doctor 保持同语义。"""
+    connect_mod, _, _ = _load_connect_module()
+    old_cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        dp = root / ".dp"
+        dp.mkdir(parents=True, exist_ok=True)
+        (dp / "config.json").write_text('{"default_provider":123}', encoding="utf-8")
+        os.chdir(root)
+        try:
+            result = connect_mod.get_default_browser_provider()
+            check(
+                "provider: non-string default_provider 回退 cdp-port",
+                result == "cdp-port",
+                repr(result),
+            )
+        finally:
+            os.chdir(old_cwd)
+
+
+def test_browser_provider_loader_finds_workspace_provider() -> None:
+    """loader 应能用 kebab-case 名称加载 snake_case 文件名 provider。"""
+    connect_mod, _, _ = _load_connect_module()
+    old_cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        provider_dir = root / ".dp" / "providers"
+        provider_dir.mkdir(parents=True, exist_ok=True)
+        (provider_dir / "stub_provider.py").write_text(
+            "def start_profile(profile=None, *, base_url=None, timeout=60, extra_params=None):\n"
+            "    return {'debug_address': '127.0.0.1:50326'}\n"
+            "\n"
+            "def extract_debug_address(start_result):\n"
+            "    return start_result['debug_address']\n",
+            encoding="utf-8",
+        )
+        os.chdir(root)
+        try:
+            providers = connect_mod.list_browser_providers()
+            check("provider: snake_case 文件可枚举为 kebab-case", "stub-provider" in providers, repr(providers))
+            module = connect_mod.load_browser_provider("stub-provider")
+            check("provider: kebab-case 名称可加载 snake_case 文件", callable(module.start_profile), repr(module))
+        finally:
+            os.chdir(old_cwd)
+
+
+def test_browser_provider_loader_rejects_normalized_name_conflict() -> None:
+    """kebab/snake 文件名归一化后冲突时应报错。"""
+    connect_mod, _, _ = _load_connect_module()
+    old_cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        provider_dir = root / ".dp" / "providers"
+        provider_dir.mkdir(parents=True, exist_ok=True)
+        provider_code = (
+            "def start_profile(profile=None, *, base_url=None, timeout=60, extra_params=None):\n"
+            "    return {'debug_address': '127.0.0.1:50326'}\n"
+            "\n"
+            "def extract_debug_address(start_result):\n"
+            "    return start_result['debug_address']\n"
+        )
+        (provider_dir / "anti-detect.py").write_text(provider_code, encoding="utf-8")
+        (provider_dir / "anti_detect.py").write_text(provider_code, encoding="utf-8")
+        os.chdir(root)
+        try:
+            try:
+                connect_mod.list_browser_providers()
+            except ValueError as exc:
+                check("provider: 归一化命名冲突时报错", "anti-detect" in str(exc), str(exc))
+            else:
+                check("provider: 归一化命名冲突时报错", False, "未抛出 ValueError")
+        finally:
+            os.chdir(old_cwd)
+
+
+def test_workspace_provider_start_profile_and_connect() -> None:
+    """高层 helper 应返回规范化 launch_info，而不是 raw start_result。"""
+    connect_mod, RecordingChromiumPage, _ = _load_connect_module()
+    RecordingChromiumPage._instances.clear()
+    old_cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        provider_dir = root / ".dp" / "providers"
+        provider_dir.mkdir(parents=True, exist_ok=True)
+        (provider_dir / "stub-provider.py").write_text(
+            "def start_profile(profile=None, *, base_url=None, timeout=60, extra_params=None):\n"
+            "    return (\n"
+            "        '127.0.0.1:50326',\n"
+            "        {\n"
+            "            'timeout': timeout,\n"
+            "            'base_url': base_url,\n"
+            "            'region': dict(extra_params or {}).get('region'),\n"
+            "        },\n"
+            "    )\n"
+            "\n"
+            "def extract_debug_address(start_result):\n"
+            "    return start_result[0]\n"
+            "\n"
+            "def extract_metadata(start_result):\n"
+            "    return start_result[1]\n",
+            encoding="utf-8",
+        )
+        os.chdir(root)
+        try:
+            start_result = connect_mod.start_browser_profile(
+                "stub-provider",
+                {"profile_id": 7},
+                base_url="http://provider.local",
+                timeout=12,
+                extra_params={"region": "eu"},
+            )
+            launch_info, page = connect_mod.start_profile_and_connect_browser(
+                "stub-provider",
+                {"profile_id": 7},
+                base_url="http://provider.local",
+                timeout=12,
+                extra_params={"region": "eu"},
+            )
+        finally:
+            os.chdir(old_cwd)
+
+    check("provider: start_profile 允许非 dict 返回值", isinstance(start_result, tuple), repr(type(start_result).__name__))
+    check("provider: launch_info 返回 provider 名", launch_info.get("provider") == "stub-provider", repr(launch_info))
+    check("provider: launch_info 返回 provider_url", launch_info.get("provider_url") == "http://provider.local", repr(launch_info))
+    check("provider: launch_info 返回 browser_profile", launch_info.get("browser_profile", {}).get("profile_id") == 7, repr(launch_info))
+    check("provider: launch_info 返回 debug_address", launch_info.get("debug_address") == "127.0.0.1:50326", repr(launch_info))
+    check("provider: launch_info 返回 provider_metadata", launch_info.get("provider_metadata", {}).get("region") == "eu", repr(launch_info))
+    check("provider: 返回页面对象", page is not None, repr(page))
+    if RecordingChromiumPage._instances:
+        recorded = RecordingChromiumPage._instances[-1]
+        check(
+            "provider: 连接到返回的调试地址",
+            recorded.co.address == "127.0.0.1:50326",
+            repr(recorded.co.address),
+        )
+        check(
+            "provider: 保持 existing_only(True)",
+            recorded.co.existing is True,
+            repr(recorded.co.existing),
+        )
+    else:
+        check("provider: ChromiumPage 被构造", False, "未记录到任何 ChromiumPage 实例")
+
+
+def test_provider_loader_rejects_missing_contract() -> None:
+    """provider 文件缺少必需接口时应报错。"""
+    connect_mod, _, _ = _load_connect_module()
+    old_cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        provider_dir = root / ".dp" / "providers"
+        provider_dir.mkdir(parents=True, exist_ok=True)
+        (provider_dir / "broken-provider.py").write_text(
+            "def start_profile(profile=None, *, base_url=None, timeout=60, extra_params=None):\n"
+            "    return {'debug_address': '127.0.0.1:50326'}\n",
+            encoding="utf-8",
+        )
+        os.chdir(root)
+        try:
+            connect_mod.load_browser_provider("broken-provider")
+        except ValueError as exc:
+            check("provider: 缺少 contract 时抛错", "extract_debug_address" in str(exc), str(exc))
+        else:
+            check("provider: 缺少 contract 时抛错", False, "未抛出 ValueError")
+        finally:
+            os.chdir(old_cwd)
+
+
 # ── validate_rule_markers 章节内检查测试 ─────────────────────────────────────
 
 _SKILL_MD_STABLE = (
@@ -1867,23 +3292,41 @@ _SKILL_MD_STABLE = (
 )
 
 
-def _build_skill_md(preflight: str = "", port: str = "", reuse: str = "", other: str = "") -> str:
+def _build_skill_md(
+    preflight: str = "",
+    port: str = "",
+    interaction: str = "",
+    reuse: str = "",
+    other: str = "",
+) -> str:
     return (
         _SKILL_MD_STABLE
         + f"\n### 1. Preflight（工作区检测）\n\n{preflight}\n"
         + f"\n### 3. 端口与连接策略\n\n{port}\n"
+        + f"\n### 4. 交互与节奏约束\n\n{interaction}\n"
         + f"\n### 5. 复用优先\n\n{reuse}\n"
         + (f"\n## 其他章节\n\n{other}\n" if other else "")
     )
 
 
+def _build_smoke_checklist(preflight: str = "", other: str = "") -> str:
+    return (
+        "# DP Smoke Checklist\n\n"
+        "## 1. 触发检查\n\n"
+        "- 给出截图需求，确认客户端会使用 `dp`\n\n"
+        "## 2. Preflight 检查\n\n"
+        f"{preflight}\n"
+        + (f"\n## 其他检查\n\n{other}\n" if other else "")
+    )
+
+
 def test_validate_rule_markers_port_rule_needs_section() -> None:
-    """端口策略 token（9222、默认）散落在错误章节时，validate_rule_markers 应失败。"""
+    """端口策略 token（cdp-port、显式、port）散落在错误章节时，validate_rule_markers 应失败。"""
     content = _build_skill_md(
         preflight="工作区根通过 cwd 确定，.dp 目录相对该根解析",
-        port="连接到已有浏览器实例",          # 无 9222 / 默认
+        port="连接到已有浏览器实例",          # 无 cdp-port / 显式 / port
         reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 传根路径",
-        other="端口 9222 默认使用",            # token 在错误章节
+        other="cdp-port 需要显式 port",       # token 在错误章节
     )
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
@@ -1897,7 +3340,7 @@ def test_validate_rule_markers_list_scripts_rule_needs_section() -> None:
     """list-scripts/--root/cwd token 散落在错误章节时，validate_rule_markers 应失败。"""
     content = _build_skill_md(
         preflight="工作区根通过 cwd 确定，.dp 目录相对该根解析",
-        port="默认端口 9222",
+        port="cdp-port 需要显式 port",
         reuse="先枚举已有 workflow，找不到再生成",    # 无 list-scripts.py / --root / cwd
         other="用 list-scripts.py --root 传根路径，cwd 不在树内时需显式传",
     )
@@ -1913,7 +3356,7 @@ def test_validate_rule_markers_workspace_root_rule_needs_section() -> None:
     """工作区根/cwd/.dp token 散落在错误章节时，validate_rule_markers 应失败。"""
     content = _build_skill_md(
         preflight="检测 state.json 版本一致性",        # 无 工作区根 / cwd / .dp
-        port="默认端口 9222",
+        port="cdp-port 需要显式 port",
         reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 传根路径",
         other="工作区根通过 cwd 确定，.dp 目录相对该根解析",
     )
@@ -1928,8 +3371,21 @@ def test_validate_rule_markers_workspace_root_rule_needs_section() -> None:
 def test_validate_rule_markers_allows_rephrased_prose() -> None:
     """等价语义但不同措辞时，validate_rule_markers 不应误报（防回归）。"""
     content = _build_skill_md(
-        preflight="工作区根通过 cwd 设定，.dp 目录相对该根目录解析",
-        port="默认调试端口为 9222",
+        preflight=(
+            "工作区根通过 cwd 设定，.dp 目录相对该根目录解析；"
+            "只有 .dp/.venv/ 存在且工作区 Python 可执行并可导入 DrissionPage、"
+            ".dp/lib/connect.py、.dp/lib/download_correlation.py、.dp/lib/output.py、.dp/lib/utils.py、.dp/lib/_dp_compat.py、"
+            ".dp/config.json 含 default_provider、.dp/providers/cdp-port.py 存在、"
+            ".dp/state.json 中的 runtime_lib_version 与 bundle_version 都匹配时，才可跳过 doctor；"
+            "若当前默认 provider 不是 cdp-port，则其对应 provider 文件也必须存在，否则属于配置错误，需用户提供实现或修正配置；"
+            "若 default_provider 非空但不合法，则属于配置错误，doctor 不会自动修复，需用户修正配置"
+        ),
+        port="若当前 provider 为 cdp-port，则必须显式传入 browser_profile.port",
+        interaction=(
+            "upload_file() / download_file() 默认处理跨平台路径；"
+            "若 workflow 传入 launch_info，则会结合 provider hints 判断本地文件访问能力；"
+            "若 provider 明确声明 remote 或不支持本地文件访问，则 helper 直接报错"
+        ),
         reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 显式传根路径",
     )
     with tempfile.TemporaryDirectory() as d:
@@ -1939,6 +3395,228 @@ def test_validate_rule_markers_allows_rephrased_prose() -> None:
             check("validate_rule_markers: 等价改写不误报", True)
         except SystemExit:
             check("validate_rule_markers: 等价改写不误报", False, "不应触发 SystemExit")
+
+
+def test_validate_rule_markers_preflight_requires_workspace_contract_tokens() -> None:
+    """Preflight 章节缺少 config/provider/state/version token 时，validate_rule_markers 应失败。"""
+    content = _build_skill_md(
+        preflight="工作区根通过 cwd 设定，.dp 目录相对该根目录解析",
+        port="若当前 provider 为 cdp-port，则必须显式传入 browser_profile.port",
+        reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 显式传根路径",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_rule_markers: Preflight 缺少 workspace contract token 应失败",
+            lambda: _vb.validate_rule_markers(Path(d)),
+        )
+
+
+def test_validate_rule_markers_preflight_requires_managed_lib_markers() -> None:
+    """Preflight 若只写 .dp/lib/ 存在、未写 managed lib 与 DrissionPage，应失败。"""
+    content = _build_skill_md(
+        preflight=(
+            "工作区根通过 cwd 设定，.dp 目录相对该根目录解析；"
+            ".dp/.venv/ 存在且工作区 Python 可执行；"
+            ".dp/lib/ 存在；"
+            ".dp/config.json 含 default_provider；"
+            ".dp/providers/cdp-port.py 与 .dp/state.json 存在，"
+            "runtime_lib_version / bundle_version 匹配时可跳过 doctor"
+        ),
+        port="若当前 provider 为 cdp-port，则必须显式传入 browser_profile.port",
+        reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 显式传根路径",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_rule_markers: Preflight 缺少 managed lib / DrissionPage marker 应失败",
+            lambda: _vb.validate_rule_markers(Path(d)),
+        )
+
+
+def test_validate_rule_markers_preflight_requires_download_correlation_marker() -> None:
+    """Preflight 若未列出 .dp/lib/download_correlation.py，应失败。"""
+    content = _build_skill_md(
+        preflight=(
+            "工作区根通过 cwd 设定，.dp 目录相对该根目录解析；"
+            ".dp/.venv/ 存在且工作区 Python 可执行并可导入 DrissionPage；"
+            ".dp/lib/connect.py、.dp/lib/output.py、.dp/lib/utils.py、.dp/lib/_dp_compat.py、"
+            ".dp/providers/cdp-port.py、.dp/config.json、.dp/state.json 全部就绪，"
+            "且 default_provider 合法、runtime_lib_version / bundle_version 匹配时才可跳过 doctor；"
+            "若当前默认 provider 不是 cdp-port，则其对应 provider 文件也必须存在；"
+            "default_provider 非空但不合法属于配置错误，doctor 不做猜测式修复，需用户或客户端修正配置"
+        ),
+        port="若当前 provider 为 cdp-port，则必须显式传入 browser_profile.port",
+        interaction=(
+            "upload_file() / download_file() 默认处理跨平台路径；"
+            "若 workflow 传入 launch_info，则会结合 provider hints 判断本地文件访问能力；"
+            "若 provider 明确声明 remote 或不支持本地文件访问，则 helper 直接报错"
+        ),
+        reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 显式传根路径",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_rule_markers: Preflight 缺少 download_correlation marker 应失败",
+            lambda: _vb.validate_rule_markers(Path(d)),
+        )
+
+
+def test_validate_rule_markers_preflight_requires_illegal_provider_boundary() -> None:
+    """Preflight 若未声明非法 provider 不能自动修复，应失败。"""
+    content = _build_skill_md(
+        preflight=(
+            "工作区根通过 cwd 设定，.dp 目录相对该根目录解析；"
+            ".dp/.venv/ 存在且工作区 Python 可执行并可导入 DrissionPage；"
+            ".dp/lib/connect.py、.dp/lib/download_correlation.py、.dp/lib/output.py、.dp/lib/utils.py、.dp/lib/_dp_compat.py 存在；"
+            "若 .dp/config.json 缺失、损坏，或 default_provider 为空 / 不合法，"
+            "则运行 scripts/doctor.py 修复；"
+            ".dp/providers/cdp-port.py 与 .dp/state.json 存在，"
+            "runtime_lib_version / bundle_version 匹配时可跳过 doctor"
+        ),
+        port="若当前 provider 为 cdp-port，则必须显式传入 browser_profile.port",
+        reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 显式传根路径",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_rule_markers: 非法 provider 未声明 fail-fast 边界时应失败",
+            lambda: _vb.validate_rule_markers(Path(d)),
+        )
+
+
+def test_validate_rule_markers_preflight_requires_selected_provider_presence_boundary() -> None:
+    """Preflight 若未声明当前默认 provider 对应实现必须存在，应失败。"""
+    content = _build_skill_md(
+        preflight=(
+            "工作区根通过 cwd 设定，.dp 目录相对该根目录解析；"
+            ".dp/.venv/ 存在且工作区 Python 可执行并可导入 DrissionPage；"
+            ".dp/lib/connect.py、.dp/lib/download_correlation.py、.dp/lib/output.py、.dp/lib/utils.py、.dp/lib/_dp_compat.py、"
+            ".dp/providers/cdp-port.py、.dp/config.json、.dp/state.json 全部就绪，"
+            "且 default_provider 合法、runtime_lib_version / bundle_version 匹配时才可跳过 doctor；"
+            "default_provider 非空但不合法属于配置错误，doctor 不做猜测式修复，需用户或客户端修正配置"
+        ),
+        port="若当前 provider 为 cdp-port，则必须显式传入 browser_profile.port",
+        reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 显式传根路径",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_rule_markers: Preflight 缺少当前默认 provider 实现存在性边界应失败",
+            lambda: _vb.validate_rule_markers(Path(d)),
+        )
+
+
+def test_validate_rule_markers_file_helper_requires_remote_fail_fast_boundary() -> None:
+    """交互章节若只写“更安全”，未声明 remote fail-fast，应失败。"""
+    content = _build_skill_md(
+        preflight=(
+            "工作区根通过 cwd 设定，.dp 目录相对该根目录解析；"
+            ".dp/.venv/ 存在且工作区 Python 可执行并可导入 DrissionPage；"
+            ".dp/lib/connect.py、.dp/lib/download_correlation.py、.dp/lib/output.py、.dp/lib/utils.py、.dp/lib/_dp_compat.py、"
+            ".dp/providers/cdp-port.py、.dp/config.json、.dp/state.json 全部就绪，"
+            "且 default_provider 合法、runtime_lib_version / bundle_version 匹配时才可跳过 doctor；"
+            "若当前默认 provider 不是 cdp-port，则其对应 provider 文件也必须存在；"
+            "default_provider 非空但不合法属于配置错误，doctor 不做猜测式修复，需用户或客户端修正配置"
+        ),
+        port="若当前 provider 为 cdp-port，则必须显式传入 browser_profile.port",
+        interaction=(
+            "upload_file() / download_file() 默认处理跨平台路径；"
+            "若 workflow 传入 launch_info，则会结合 provider hints 做更安全的本地文件访问判断"
+        ),
+        reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 显式传根路径",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_rule_markers: 交互章节缺少 remote file helper fail-fast 边界应失败",
+            lambda: _vb.validate_rule_markers(Path(d)),
+        )
+
+
+def test_validate_rule_markers_allows_preflight_prose_with_repair_boundary() -> None:
+    """等价但更完整的 preflight prose 应通过，避免 validator 过拟合逐字文案。"""
+    content = _build_skill_md(
+        preflight=(
+            "工作区根通过 cwd 设定，.dp 目录相对该根目录解析；"
+            ".dp/.venv/ 存在且工作区 Python 可执行并可导入 DrissionPage；"
+            ".dp/lib/connect.py、.dp/lib/download_correlation.py、.dp/lib/output.py、.dp/lib/utils.py、.dp/lib/_dp_compat.py、"
+            ".dp/providers/cdp-port.py、.dp/config.json、.dp/state.json 全部就绪，"
+            "且 default_provider 合法、runtime_lib_version / bundle_version 匹配时才可跳过 doctor；"
+            "若当前默认 provider 不是 cdp-port，则其对应的 .dp/providers/<name>.py 或等价 snake_case 文件也必须存在，否则属于配置错误，需用户或客户端提供实现或修正配置；"
+            "default_provider 非空但不合法属于配置错误，doctor 不做猜测式修复，需用户或客户端修正配置"
+        ),
+        port="若当前 provider 为 cdp-port，则必须显式传入 browser_profile.port",
+        interaction=(
+            "upload_file() / download_file() 默认处理跨平台路径；"
+            "若 workflow 传入 launch_info，则会结合 provider hints 判断本地文件访问能力；"
+            "若 provider 明确声明 remote 或不支持本地文件访问，则 helper 直接报错"
+        ),
+        reuse="当 cwd 不在项目树内时，用 list-scripts.py --root 显式传根路径",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "SKILL.md").write_text(content, encoding="utf-8")
+        try:
+            _vb.validate_rule_markers(Path(d))
+            check("validate_rule_markers: 新 preflight prose 可通过", True)
+        except SystemExit:
+            check("validate_rule_markers: 新 preflight prose 可通过", False, "不应触发 SystemExit")
+
+
+def test_validate_smoke_checklist_requires_non_string_repair_boundary() -> None:
+    """smoke checklist 若未声明 non-string default_provider 可自动修复，应失败。"""
+    content = _build_smoke_checklist(
+        preflight=(
+            "- `.dp/config.json` 缺失、损坏，或 `default_provider` 缺失 / 空白时，应触发 doctor 自动修复\n"
+            "- `default_provider` 非空但不合法时，属于配置错误；doctor 不做猜测式修复，需用户或客户端修正配置\n"
+        )
+    )
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "evals").mkdir()
+        (root / "evals" / "smoke-checklist.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_smoke_checklist_contracts: 缺少 non-string repair boundary 应失败",
+            lambda: _vb.validate_smoke_checklist_contracts(root),
+        )
+
+
+def test_validate_smoke_checklist_requires_selected_provider_snake_case_boundary() -> None:
+    """smoke checklist 若未声明等价 snake_case provider 文件，应失败。"""
+    content = _build_smoke_checklist(
+        preflight=(
+            "- `.dp/config.json` 缺失、损坏，或 `default_provider` 缺失 / 非字符串 / 空字符串 / 纯空白时，应触发 doctor 自动修复\n"
+            "- 当前默认 provider 非 `cdp-port` 但对应 provider 文件缺失时，属于配置错误；doctor 不会自动发明实现，需用户或客户端补齐 `.dp/providers/<name>.py` 或修正配置\n"
+        )
+    )
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "evals").mkdir()
+        (root / "evals" / "smoke-checklist.md").write_text(content, encoding="utf-8")
+        _expect_fail(
+            "validate_smoke_checklist_contracts: 缺少 snake_case provider 边界应失败",
+            lambda: _vb.validate_smoke_checklist_contracts(root),
+        )
+
+
+def test_validate_smoke_checklist_allows_complete_preflight_prose() -> None:
+    """smoke checklist 的等价完整 preflight prose 应通过。"""
+    content = _build_smoke_checklist(
+        preflight=(
+            "- `.dp/config.json` 缺失、损坏，或 `default_provider` 缺失 / 非字符串 / 空字符串 / 纯空白时，应触发 doctor 自动修复\n"
+            "- `default_provider` 非空但不合法时，属于配置错误；doctor 不做猜测式修复，需用户或客户端修正配置\n"
+            "- 当前默认 provider 非 `cdp-port` 但对应 provider 文件缺失时，属于配置错误；doctor 不会自动发明实现，需用户或客户端补齐对应 provider 文件（含 `.dp/providers/<name>.py` 或等价 snake_case 文件）或修正配置\n"
+        )
+    )
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "evals").mkdir()
+        (root / "evals" / "smoke-checklist.md").write_text(content, encoding="utf-8")
+        try:
+            _vb.validate_smoke_checklist_contracts(root)
+            check("validate_smoke_checklist_contracts: 完整 preflight prose 可通过", True)
+        except SystemExit:
+            check("validate_smoke_checklist_contracts: 完整 preflight prose 可通过", False, "不应触发 SystemExit")
 
 
 if __name__ == "__main__":

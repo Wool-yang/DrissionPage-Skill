@@ -23,13 +23,17 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 WORKSPACE = Path(".dp")
 VENV = WORKSPACE / ".venv"
 LIB = WORKSPACE / "lib"
+CONFIG = WORKSPACE / "config.json"
 STATE = WORKSPACE / "state.json"
 SKILL_DIR = Path(__file__).parent.parent  # <skill-root>/
 TEMPLATES = SKILL_DIR / "templates"
+PROVIDER_TEMPLATES = TEMPLATES / "providers"
+DEFAULT_FALLBACK_PROVIDER = "cdp-port"
 
 MIN_PYTHON = (3, 10)
 
@@ -85,6 +89,47 @@ def _write_state(bundle_version: str, runtime_lib_version: str) -> None:
     )
 
 
+def _state_runtime_version(state: dict[str, Any]) -> str | None:
+    """从 state.json 兼容读取 runtime 版本字段。"""
+    if not isinstance(state, dict):
+        return None
+    return state.get("runtime_lib_version") or state.get("lib_version")
+
+
+def _read_config() -> dict:
+    """读取 .dp/config.json，失败返回空字典。"""
+    try:
+        return json.loads(CONFIG.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def normalize_provider_name(raw: str) -> str:
+    """把 provider 名规范化为 kebab-case；非法值直接报错。"""
+    key = (raw or "").strip().lower()
+    if not key:
+        raise ValueError("default_provider 不能为空。")
+    if not re.fullmatch(r"[a-z0-9-]+", key):
+        raise ValueError(f"default_provider 不合法：{raw!r}")
+    return key
+
+
+def _write_default_config() -> None:
+    """初始化工作区默认配置；修复未初始化值，拒绝显式非法 provider。"""
+    config = _read_config()
+    if not isinstance(config, dict):
+        config = {}
+    raw = config.get("default_provider")
+    if not isinstance(raw, str) or not raw.strip():
+        config["default_provider"] = DEFAULT_FALLBACK_PROVIDER
+    else:
+        config["default_provider"] = normalize_provider_name(raw)
+    CONFIG.write_text(
+        json.dumps(config, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
 
 def has_uv() -> bool:
@@ -123,19 +168,24 @@ def find_python() -> str:
     return ""
 
 
+def resolve_venv_python(venv: Path) -> Path:
+    """按宿主 OS 返回指定 venv 的优先 Python 路径。"""
+    if os.name == "nt":
+        preferred = venv / "Scripts" / "python.exe"
+        fallback = venv / "bin" / "python"
+    else:
+        preferred = venv / "bin" / "python"
+        fallback = venv / "Scripts" / "python.exe"
+    return preferred if preferred.exists() else fallback
+
+
 def venv_python() -> Path:
     """按宿主 OS 优先返回 venv Python 路径。
 
     Windows 宿主优先 Scripts/python.exe；非 Windows（Linux/WSL/macOS）优先 bin/python。
     这样在 WSL 接管 Windows venv 时不会选到不可执行的 .exe。
     """
-    if os.name == "nt":
-        preferred = VENV / "Scripts" / "python.exe"
-        fallback = VENV / "bin" / "python"
-    else:
-        preferred = VENV / "bin" / "python"
-        fallback = VENV / "Scripts" / "python.exe"
-    return preferred if preferred.exists() else fallback
+    return resolve_venv_python(VENV)
 
 
 def is_drissionpage_source(cwd: Path | None = None) -> bool:
@@ -158,6 +208,67 @@ def _find_project_root() -> Path:
             break
         candidate = parent
     return Path.cwd()
+
+
+def _required_source_assets() -> list[Path]:
+    """返回 doctor 初始化工作区前必须存在的 source bundle 资产。"""
+    return [
+        TEMPLATES / "connect.py",
+        TEMPLATES / "download_correlation.py",
+        TEMPLATES / "output.py",
+        TEMPLATES / "utils.py",
+        TEMPLATES / "_dp_compat.py",
+        PROVIDER_TEMPLATES / "cdp-port.py",
+    ]
+
+
+def _workspace_paths(workspace: Path) -> dict[str, Path]:
+    """按工作区根生成 doctor 会用到的关键路径。"""
+    return {
+        "workspace": workspace,
+        "venv": workspace / ".venv",
+        "lib": workspace / "lib",
+        "config": workspace / "config.json",
+        "state": workspace / "state.json",
+        "providers": workspace / "providers",
+    }
+
+
+def _provider_file_candidates(name: str, providers_dir: Path) -> tuple[Path, ...]:
+    """返回与 runtime loader 一致的 provider 文件候选路径。"""
+    snake = name.replace("-", "_")
+    candidates = [providers_dir / f"{name}.py"]
+    if snake != name:
+        candidates.append(providers_dir / f"{snake}.py")
+    return tuple(candidates)
+
+
+def _selected_provider_issue(name: str, providers_dir: Path) -> str | None:
+    """校验当前选中的默认 provider 是否存在实现文件。"""
+    if name == DEFAULT_FALLBACK_PROVIDER:
+        return None
+    candidates = _provider_file_candidates(name, providers_dir)
+    if any(path.is_file() for path in candidates):
+        return None
+    searched = " / ".join(str(path) for path in candidates)
+    return (
+        f".dp/config.json default_provider={name!r} 对应的 provider 文件不存在"
+        f"（已检查：{searched}），需用户或客户端提供实现或修正配置"
+    )
+
+
+def _validate_default_provider(raw: Any) -> tuple[str | None, str | None]:
+    """校验并规范化 default_provider；返回 (provider, issue)。"""
+    if raw is None:
+        return None, ".dp/config.json 缺少 default_provider"
+    if not isinstance(raw, str):
+        return None, ".dp/config.json 缺少 default_provider"
+    if not raw.strip():
+        return None, ".dp/config.json 缺少 default_provider"
+    try:
+        return normalize_provider_name(raw), None
+    except ValueError:
+        return None, f".dp/config.json default_provider 不合法：{raw!r}"
 
 
 # ── 核心操作 ──────────────────────────────────────────────────────────────────
@@ -242,15 +353,28 @@ def install_drissionpage(use_uv: bool) -> bool:
 
 # ── 检测与初始化 ──────────────────────────────────────────────────────────────
 
-def check() -> list[str]:
-    """检测环境，返回问题列表（空列表代表一切正常）。"""
+def evaluate_workspace(workspace: Path | None = None) -> dict[str, Any]:
+    """结构化检测工作区，供 doctor/smoke 复用同一套 readiness contract。"""
+    paths = _workspace_paths(workspace or WORKSPACE)
     issues: list[str] = []
+    default_provider: str | None = None
+    state_runtime_v: str | None = None
+    state_bundle_v: str | None = None
+    runtime_v = _read_runtime_lib_version()
+    bundle_v = _read_bundle_version()
 
-    if not WORKSPACE.exists():
+    if not paths["workspace"].exists():
         issues.append(".dp/ 工作空间不存在")
-        return issues
+        return {
+            "issues": issues,
+            "default_provider": default_provider,
+            "runtime_lib_version": runtime_v,
+            "bundle_version": bundle_v,
+            "state_runtime_lib_version": state_runtime_v,
+            "state_bundle_version": state_bundle_v,
+        }
 
-    py = venv_python()
+    py = resolve_venv_python(paths["venv"])
     try:
         py_exists = py.exists()
     except OSError:
@@ -270,44 +394,84 @@ def check() -> list[str]:
         except Exception as e:
             issues.append(f".dp/.venv/ 检测失败：{e}")
 
-    for name in ("connect.py", "output.py", "utils.py", "_dp_compat.py"):
-        if not (LIB / name).exists():
+    for name in ("connect.py", "download_correlation.py", "output.py", "utils.py", "_dp_compat.py"):
+        if not (paths["lib"] / name).exists():
             issues.append(f".dp/lib/{name} 缺失")
 
-    runtime_v = _read_runtime_lib_version()
-    if not STATE.exists():
+    if not (paths["providers"] / "cdp-port.py").exists():
+        issues.append(".dp/providers/cdp-port.py 缺失")
+
+    if not paths["config"].exists():
+        issues.append(".dp/config.json 不存在（工作区默认 provider 未初始化）")
+    else:
+        try:
+            config = json.loads(paths["config"].read_text(encoding="utf-8"))
+        except Exception:
+            config = None
+            issues.append(".dp/config.json 损坏或格式错误，需要重新初始化")
+        if config is None:
+            pass
+        elif not isinstance(config, dict):
+            issues.append(".dp/config.json 损坏或格式错误，需要重新初始化")
+        else:
+            default_provider, config_issue = _validate_default_provider(config.get("default_provider"))
+            if config_issue:
+                issues.append(config_issue)
+            elif default_provider:
+                provider_issue = _selected_provider_issue(default_provider, paths["providers"])
+                if provider_issue:
+                    issues.append(provider_issue)
+
+    if not paths["state"].exists():
         issues.append(".dp/state.json 不存在（工作区需要重新初始化）")
     else:
         try:
-            state = json.loads(STATE.read_text(encoding="utf-8"))
+            state = json.loads(paths["state"].read_text(encoding="utf-8"))
             # 兼容旧 lib_version 字段
-            state_v = state.get("runtime_lib_version") or state.get("lib_version")
-            if state_v is None:
+            state_runtime_v = state.get("runtime_lib_version") or state.get("lib_version")
+            if state_runtime_v is None:
                 issues.append(".dp/state.json 缺少版本信息，需要重新初始化")
-            elif state_v != runtime_v:
+            elif state_runtime_v != runtime_v:
                 issues.append(
-                    f".dp/lib runtime 版本 {state_v!r} 与当前 {runtime_v!r} 不一致，需要升级"
+                    f".dp/lib runtime 版本 {state_runtime_v!r} 与当前 {runtime_v!r} 不一致，需要升级"
                 )
             # bundle_version 差异：触发工作区文档与状态刷新（init 不重建 venv，影响极小）
-            state_bundle = state.get("bundle_version", "")
-            skill_bundle = _read_bundle_version()
-            if skill_bundle not in ("", "unknown") and state_bundle != skill_bundle:
+            state_bundle_v = state.get("bundle_version", "")
+            if bundle_v not in ("", "unknown") and state_bundle_v != bundle_v:
                 issues.append(
-                    f".dp bundle 版本 {state_bundle!r} 与当前 {skill_bundle!r} 不一致，"
+                    f".dp bundle 版本 {state_bundle_v!r} 与当前 {bundle_v!r} 不一致，"
                     "工作区文档与状态需要刷新"
                 )
         except Exception:
             issues.append(".dp/state.json 损坏，无法解析，需要重新初始化")
 
-    return issues
+    return {
+        "issues": issues,
+        "default_provider": default_provider,
+        "runtime_lib_version": runtime_v,
+        "bundle_version": bundle_v,
+        "state_runtime_lib_version": state_runtime_v,
+        "state_bundle_version": state_bundle_v,
+    }
+
+
+def check() -> list[str]:
+    """检测环境，返回问题列表（空列表代表一切正常）。"""
+    return list(evaluate_workspace()["issues"])
 
 
 def init(force: bool = False) -> bool:
     """初始化或修复工作空间，返回是否成功。"""
     use_uv = acquire_uv()
 
+    missing_assets = [path for path in _required_source_assets() if not path.exists()]
+    if missing_assets:
+        for path in missing_assets:
+            print(f"[dp] 错误：缺少 source bundle 资产：{path}", file=sys.stderr)
+        return False
+
     # 1. 目录结构
-    for d in [WORKSPACE / "projects", WORKSPACE / "tmp" / "_out", LIB]:
+    for d in [WORKSPACE / "projects", WORKSPACE / "tmp" / "_out", LIB, WORKSPACE / "providers"]:
         d.mkdir(parents=True, exist_ok=True)
 
     # .dp/ 根目录的 .gitignore：忽略 venv 和临时区
@@ -319,11 +483,75 @@ def init(force: bool = False) -> bool:
     if not gitignore.exists():
         gitignore.write_text("*\n")
 
-    # 2. 虚拟环境
+    runtime_v = _read_runtime_lib_version()
+    bundle_v = _read_bundle_version()
+    state = _read_state()
+    state_runtime_v = _state_runtime_version(state)
+    state_bundle_v = state.get("bundle_version", "") if isinstance(state, dict) else ""
+    providers_dir = WORKSPACE / "providers"
+    runtime_asset_missing = any(
+        not (LIB / name).exists()
+        for name in ("connect.py", "download_correlation.py", "output.py", "utils.py", "_dp_compat.py")
+    ) or not (providers_dir / "cdp-port.py").exists()
+
     try:
         venv_ok = venv_python().exists()
     except OSError:
         venv_ok = False  # 文件存在但不可访问（如 Windows 下不可读的 symlink）
+
+    drissionpage_ready = False
+    if venv_ok:
+        try:
+            drissionpage_ready = subprocess.run(
+                [str(venv_python()), "-c", "import DrissionPage"],
+                capture_output=True,
+                timeout=10,
+            ).returncode == 0
+        except Exception:
+            drissionpage_ready = False
+
+    bundle_only_refresh = (
+        not force
+        and venv_ok
+        and drissionpage_ready
+        and not runtime_asset_missing
+        and state_runtime_v == runtime_v
+        and bundle_v not in ("", "unknown")
+        and state_bundle_v != bundle_v
+    )
+
+    def _finalize_workspace() -> bool:
+        # 工作空间文档每次 init 成功都重写，确保不会停留在旧 contract
+        _write_workspace_docs()
+
+        # 默认配置（保留用户修改）
+        try:
+            _write_default_config()
+        except ValueError as e:
+            print(f"[dp] 错误：{e}", file=sys.stderr)
+            return False
+
+        config = _read_config()
+        try:
+            selected_provider = normalize_provider_name(str(config.get("default_provider", "")))
+        except ValueError as e:
+            print(f"[dp] 错误：{e}", file=sys.stderr)
+            return False
+        provider_issue = _selected_provider_issue(selected_provider, providers_dir)
+        if provider_issue:
+            print(f"[dp] 错误：{provider_issue}", file=sys.stderr)
+            return False
+
+        _write_state(bundle_v, runtime_v)
+        print("[dp] ✓ 工作空间就绪：.dp/")
+        print(f"[dp]   Python: {venv_python()}")
+        print(f"[dp]   bundle: {bundle_v} / runtime-lib: {runtime_v}")
+        return True
+
+    if bundle_only_refresh:
+        return _finalize_workspace()
+
+    # 2. 虚拟环境
     if not venv_ok or force:
         if not create_venv(use_uv):
             return False
@@ -348,24 +576,19 @@ def init(force: bool = False) -> bool:
 
     # 4. lib 模板文件（始终覆盖，确保与当前 bundle 版本一致）
     (LIB / "__init__.py").touch(exist_ok=True)
-    for name in ("connect.py", "output.py", "utils.py", "_dp_compat.py"):
+    for name in ("connect.py", "download_correlation.py", "output.py", "utils.py", "_dp_compat.py"):
         src, dst = TEMPLATES / name, LIB / name
-        if src.exists():
-            shutil.copy2(src, dst)
-            print(f"[dp] 同步 {dst}")
+        shutil.copy2(src, dst)
+        print(f"[dp] 同步 {dst}")
 
-    # 5. 工作空间文档（首次）
-    _write_workspace_docs()
+    # 4b. runtime-managed provider 模板
+    (providers_dir / "__init__.py").touch(exist_ok=True)
+    managed_provider = PROVIDER_TEMPLATES / "cdp-port.py"
+    dst = providers_dir / "cdp-port.py"
+    shutil.copy2(managed_provider, dst)
+    print(f"[dp] 同步 {dst}")
 
-    # 6. 写入/更新持久状态
-    bundle_v = _read_bundle_version()
-    runtime_v = _read_runtime_lib_version()
-    _write_state(bundle_v, runtime_v)
-
-    print("[dp] ✓ 工作空间就绪：.dp/")
-    print(f"[dp]   Python: {venv_python()}")
-    print(f"[dp]   bundle: {bundle_v} / runtime-lib: {runtime_v}")
-    return True
+    return _finalize_workspace()
 
 
 def _write_workspace_docs() -> None:
@@ -377,7 +600,8 @@ def _write_workspace_docs() -> None:
         "# .dp/ — DrissionPage 工作空间\n\n"
         "| 路径 | 用途 |\n|---|---|\n"
         "| `.venv/` | Python 虚拟环境（uv 或标准 venv） |\n"
-        "| `lib/` | 共用库（connect / output / utils） |\n"
+        "| `lib/` | 共用库（connect / download_correlation / output / utils） |\n"
+        "| `providers/` | 工作区 browser providers（含 runtime-managed `cdp-port.py`） |\n"
         "| `projects/<site>/` | 按网站存放脚本和输出 |\n"
         "| `tmp/` | 临时区（gitignore: *） |\n\n"
         "输出结构（run-dir contract）：\n"

@@ -64,7 +64,7 @@
     {
       "id": 7,
       "prompt": "点击页面上的下载按钮，把文件下载下来，告诉我文件保存在哪里。",
-      "expected_output": "触发 dp，选择 ChromiumPage，使用 bundled download_file() 触发下载；同 OS 场景优先走 DrissionPage 自带下载管理，跨 OS 或 DP 下载失败时 fallback 到 raw CDP 下载目录策略。同一次任务只有一个 run dir，下载文件保存到当前 run dir，文件名优先语义名，无法预推断时保留原始文件名。输出路径：.dp/projects/<site>/output/download/<timestamp>/",
+      "expected_output": "触发 dp，选择 ChromiumPage，使用 bundled download_file() 触发下载；download_file() 是单目标下载 helper，一次调用只管理一个目标下载，统一走浏览器下载目录 + 点击触发 + 完成等待的 CDP 下载主路径。对支持的链路尽量在创建下载任务时改名，否则至少保证最终文件名正确；若显式传 by_js=True，也只影响点击触发方式，不改变下载主路径。同一次任务只有一个 run dir，下载文件保存到当前 run dir，文件名优先语义名，无法预推断时保留原始文件名。输出路径：.dp/projects/<site>/output/download/<timestamp>/",
       "artifacts": ["<downloaded-filename>"],
       "must_not_create": [],
       "json_keys": [],

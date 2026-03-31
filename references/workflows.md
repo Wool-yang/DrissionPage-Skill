@@ -45,7 +45,7 @@ created: YYYY-MM-DD
 updated: YYYY-MM-DD
 last_run:
 status:
-usage: python scripts/<name>.py [--port 9222]
+usage: python scripts/<name>.py [--port <port>]
 """
 import sys
 from pathlib import Path
@@ -61,12 +61,45 @@ def _load_dp_lib(start: Path) -> None:
 
 
 _load_dp_lib(Path(__file__))
-from connect import connect_browser, parse_port
+from connect import (
+    build_default_browser_profile,
+    get_default_browser_provider,
+    parse_port,
+    start_profile_and_connect_browser,
+)
 from output import site_run_dir
 from utils import native_click, native_input, screenshot, save_json, mark_script_status, upload_file, download_file
 
-page = connect_browser(parse_port())
+# 通用模板默认继承工作区 default_provider。
+# 客户端或用户可通过 .dp/config.json 修改它；只有任务明确依赖某个 provider 时才把 PROVIDER 写死。
+PROVIDER = get_default_browser_provider()
+BROWSER_PROFILE = build_default_browser_profile(PROVIDER, parse_port())
+launch_info, page = start_profile_and_connect_browser(PROVIDER, BROWSER_PROFILE)
 ```
+
+## 指纹浏览器 provider 启动（按需）
+
+当目标浏览器不是直接在脚本里硬编码的浏览器对象时，不要在业务脚本里手写 provider API。
+优先复用 runtime 里的 provider 接口。provider 可以是本地 API provider、本地 launcher provider，
+也可以是回退用的 `cdp-port` provider；对业务脚本来说，差别只体现在 provider 名和 profile 参数。
+
+```python
+from connect import start_profile_and_connect_browser
+
+launch_info, page = start_profile_and_connect_browser(
+    "adspower",
+    {"serial_number": 2},
+)
+
+print(launch_info["debug_address"])
+```
+
+`dp` 核心不内置任何具体 provider。`adspower` 这类实现应放在 `.dp/providers/adspower.py`，
+launcher 风格 provider 也同样放在 `.dp/providers/<name>.py`。
+通用模板默认继承工作区 `default_provider`；客户端或用户可通过 `.dp/config.json` 修改它。
+如果默认值未被改掉，则会回退到 runtime-managed 的 `.dp/providers/cdp-port.py`。
+后续新增 provider 时，业务脚本只需替换 provider 名和 profile 参数，不需要重写页面流程。
+raw provider start result 只属于 provider 内部实现，不要直接写入输出目录。
 
 ---
 
@@ -240,7 +273,7 @@ page.ele("select#lang").select.by_text("中文")
 page.ele("#agree").click()  # 或 .check()
 
 # 文件上传
-upload_file(page.ele("input[type=file]"), "/path/to/file.txt")
+upload_file(page.ele("input[type=file]"), "/path/to/file.txt", launch_info=launch_info)
 ```
 
 ---
@@ -261,7 +294,7 @@ FILE_INPUT_SEL = "input[type=file]"        # 文件 input 选择器
 try:
     run = site_run_dir(SITE, "upload")
     # 被上传文件视为外部输入，不复制进 run-dir
-    upload_file(page.ele(FILE_INPUT_SEL), FILE_PATH)
+    upload_file(page.ele(FILE_INPUT_SEL), FILE_PATH, launch_info=launch_info)
     # run-dir 只保存执行中生成的产物（确认截图等）
     screenshot(page, run / "result.png")
     mark_script_status("ok")
@@ -273,7 +306,9 @@ except Exception:
 **contract**：
 - 被上传文件视为外部输入，**不放入 run-dir**
 - run-dir 只保存确认截图或结果元数据等执行产物
-- 对直接 `input[type=file]`，优先 `upload_file()`；它会处理跨平台路径
+- 对直接 `input[type=file]`，优先 `upload_file(..., launch_info=launch_info)`；它会处理跨平台路径，
+  并在提供 `launch_info` 时结合 provider hints 判断本地文件访问能力；
+  若 provider 明确声明 `remote` 或不支持本地文件访问，则 helper 直接报错而不是继续盲猜路径
   （例如 WSL Python 接管 Windows Chromium 时的 `/mnt/<drive>/...` 与 `\\wsl$\\...`）
 
 ---
@@ -298,9 +333,9 @@ try:
         ele,
         run,
         rename=FILENAME,         # 有语义名时重命名；None 则保留原始文件名
+        launch_info=launch_info,
     )
-    # download_file() 内部已等待完成，禁止在其后再调用下载管理器等待方法
-    # （raw-CDP 分支未注册下载管理器，调用会立即报错）
+    # download_file() 返回时文件已落盘，禁止在其后追加下载管理器等待
     print(f"[dp] 下载完成 → {saved}")
     mark_script_status("ok")
 except Exception:
@@ -311,12 +346,16 @@ except Exception:
 **contract**：
 - 下载文件落到**当前 run-dir**
 - 同一次任务只有一个 run-dir
+- `download_file()` 一次调用只管理**一个目标下载**
 - 文件名优先使用语义名；无法预判时保留原始文件名
-- 对下载目录优先使用 `download_file()`
-  - 同 OS 场景优先走 DrissionPage 自带下载管理
-  - 跨 OS 场景或 DP 下载失败时，再 fallback 到 raw CDP 下载目录策略
-  - `download_file()` 三条分支均自带等待逻辑，返回时文件已落盘；**禁止**在其后再调用下载管理器的等待方法（raw-CDP 分支未注册到下载管理器，调用会立即报错）
-- 对 `data:` 直链下载可优先本地直存，减少对浏览器下载事件的依赖
+- 对下载目录优先使用 `download_file(..., launch_info=launch_info)`
+  - helper 统一走浏览器下载目录 + 原生点击 + 完成等待的 CDP 下载主路径
+  - 对支持的 provider / 浏览器链路，helper 会尽量在**创建下载任务时**就改写目标文件名；否则至少保证最终落盘文件名符合 `rename`
+  - provider 若显式声明不支持本地文件访问，helper 会直接报错而不是继续盲猜路径
+  - `download_file()` 返回时文件已落盘；**禁止**在其后再调用下载管理器的等待方法
+  - 对 `data:` 直链下载可优先本地直存，减少对浏览器下载事件的依赖
+  - `download_file(..., by_js=True)` 仅影响点击触发方式，不改变下载主路径
+  - 若任务依赖新标签页，应先完成标签页切换，再触发下载
 
 ---
 
@@ -370,7 +409,7 @@ created: YYYY-MM-DD
 updated: YYYY-MM-DD
 last_run:
 status:
-usage: python scripts/<name>.py [--port 9222]
+usage: python scripts/<name>.py [--port <port>]
 """
 import sys
 from pathlib import Path
@@ -384,17 +423,24 @@ def _load_dp_lib(start: Path) -> None:
     raise RuntimeError("未找到 .dp/lib，请先运行 doctor.py 初始化工作区。")
 
 _load_dp_lib(Path(__file__))
-from connect import connect_web_page, parse_port
+from connect import (
+    build_default_browser_profile,
+    get_default_browser_provider,
+    parse_port,
+    start_profile_and_connect_web_page,
+)
 from output import site_run_dir
 from utils import save_json, mark_script_status
 
 # 配置（替换为实际值）
 SITE = "site-name"
 API_URL = "https://example.com/api/data"
+PROVIDER = get_default_browser_provider()
+BROWSER_PROFILE = build_default_browser_profile(PROVIDER, parse_port())
 
 try:
     run = site_run_dir(SITE, "web-page-sync")
-    page = connect_web_page(parse_port())   # WebPage，默认 'd'（浏览器）模式
+    launch_info, page = start_profile_and_connect_web_page(PROVIDER, BROWSER_PROFILE, mode="d")
     page.change_mode('s')                  # 切换到 session 模式，自动同步浏览器 cookies
     page.get(API_URL)
     save_json(page.json, run / "data.json")
@@ -404,7 +450,7 @@ except Exception:
     raise
 ```
 
-**何时用 WebPage**：用户已在浏览器登录，希望复用当前 cookies 通过 requests 高效抓取接口数据，而不是继续走页面点击。connect_browser() 不能切换模式；需要 session 模式时必须用 connect_web_page()。
+**何时用 WebPage**：用户已在浏览器登录，希望复用当前 cookies 通过 requests 高效抓取接口数据，而不是继续走页面点击。浏览器类任务统一走 provider-first 入口；需要 session 模式时使用 `start_profile_and_connect_web_page()`。
 
 ---
 

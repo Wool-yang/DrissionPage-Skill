@@ -4,11 +4,11 @@ dp local smoke runner — 验证 dp skill 在真实浏览器环境的运行态 c
 
 运行前提：
   1. .dp/ 已初始化（运行过 scripts/doctor.py）
-  2. 浏览器已以调试端口运行（外层工作区可用 start-chrome-cdp.bat 启动）
+  2. 若工作区默认 provider 为 cdp-port，浏览器已在你将显式传入的调试端口上运行
 
 用法：
   python <skill-root>/scripts/smoke.py
-  python <skill-root>/scripts/smoke.py --port 9222 --fixture-port 18080
+  python <skill-root>/scripts/smoke.py --port <port> --fixture-port 18080
   python <skill-root>/scripts/smoke.py --case screenshot
 
 退出码：
@@ -41,47 +41,33 @@ venv_python = _doctor_mod.venv_python
 FIXTURES_DIR = SKILL_ROOT / "evals" / "fixtures"
 WORKSPACE = Path(".dp")
 SITE = "dp-smoke"   # smoke 专用 site name，便于查找和清理
+DEFAULT_FALLBACK_PROVIDER = "cdp-port"
 
 
 # ── 工具 ──────────────────────────────────────────────────────────────────────
 
+def _evaluate_workspace() -> dict:
+    """复用 doctor 的结构化 readiness 判定。"""
+    return _doctor_mod.evaluate_workspace(WORKSPACE)
+
+
+def _get_default_provider() -> str | None:
+    """返回 doctor 视角下规范化后的工作区默认 provider。"""
+    value = _evaluate_workspace().get("default_provider")
+    return value if isinstance(value, str) and value else None
+
+
+def _normalize_port(port: str | None) -> str | None:
+    value = (port or "").strip()
+    return value or None
+
+
 def _check_workspace() -> str | None:
     """返回首个发现的问题；无问题返回 None。"""
-    if not WORKSPACE.exists():
-        return ".dp/ 不存在，请先运行 scripts/doctor.py 初始化工作区"
-    py = venv_python()
-    try:
-        if not py.exists():
-            return ".dp/.venv/ 不存在，请先运行 scripts/doctor.py"
-    except OSError:
-        return ".dp/.venv/ 不可访问"
-    # 探测实际可执行性
-    try:
-        r = subprocess.run([str(py), "--version"], capture_output=True, timeout=5)
-        if r.returncode != 0:
-            return f".dp/.venv/ Python 不可执行（返回码 {r.returncode}），请重新运行 scripts/doctor.py"
-    except (OSError, PermissionError) as e:
-        return f".dp/.venv/ Python 不可执行：{e}"
-    except subprocess.TimeoutExpired:
-        return ".dp/.venv/ Python 启动超时，请检查虚拟环境"
-    # 探测 DrissionPage 是否真正安装
-    try:
-        r = subprocess.run(
-            [str(py), "-c", "import DrissionPage"],
-            capture_output=True, timeout=10,
-        )
-        if r.returncode != 0:
-            return ".dp/.venv/ 中未安装 DrissionPage，请重新运行 scripts/doctor.py"
-    except (OSError, PermissionError) as e:
-        return f".dp/.venv/ DrissionPage 检测失败：{e}"
-    except subprocess.TimeoutExpired:
-        return ".dp/.venv/ DrissionPage 导入超时"
-    # 与 doctor.py check() 保持一致：验证全部 lib 文件都已就绪
-    # utils.py 依赖 _dp_compat.py，旧工作区或部分损坏时会在子脚本里才暴露错误
-    for _lib_name in ("connect.py", "output.py", "utils.py", "_dp_compat.py"):
-        if not (WORKSPACE / "lib" / _lib_name).exists():
-            return f".dp/lib/{_lib_name} 缺失，请重新运行 scripts/doctor.py"
-    return None
+    issues = _evaluate_workspace().get("issues", [])
+    if not isinstance(issues, list) or not issues:
+        return None
+    return str(issues[0])
 
 
 def _check_browser(port: str) -> bool:
@@ -103,14 +89,17 @@ def _latest_run_dir(case: str) -> Path | None:
     return dirs[0] if dirs else None
 
 
-def _run_script(script: str, port: str, timeout: int = 60) -> bool:
+def _run_script(script: str, port: str | None, timeout: int = 60) -> bool:
     """将 script 写入 .dp/tmp/_smoke_case.py，用 venv Python 执行，返回是否成功。"""
     tmp = WORKSPACE / "tmp" / "_smoke_case.py"
     tmp.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(script, encoding="utf-8")
     try:
+        cmd = [str(venv_python()), "-B", str(tmp)]
+        if port:
+            cmd.extend(["--port", port])
         result = subprocess.run(
-            [str(venv_python()), "-B", str(tmp), "--port", port],
+            cmd,
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
             capture_output=True, text=True, encoding="utf-8",
             timeout=timeout,
@@ -178,10 +167,17 @@ def _lib_loader() -> str:
 import sys
 from pathlib import Path
 sys.path.insert(0, r"{WORKSPACE / 'lib'}")
-from connect import connect_browser_fresh_tab, parse_port
+from connect import (
+    build_default_browser_profile,
+    get_default_browser_provider,
+    parse_port,
+    start_profile_and_connect_browser,
+)
 from output import site_run_dir
 from utils import native_click, native_input, screenshot, save_json, mark_script_status, upload_file, download_file
-page = connect_browser_fresh_tab(parse_port())
+provider = get_default_browser_provider()
+browser_profile = build_default_browser_profile(provider, parse_port())
+launch_info, page = start_profile_and_connect_browser(provider, browser_profile, fresh_tab=True)
 '''
 
 
@@ -242,7 +238,7 @@ try:
     page.wait.doc_loaded()
     run = site_run_dir("{SITE}", "upload")
     expected_name = Path(r"{upload_file}").name
-    upload_file(page.ele("#file-input"), r"{upload_file}")
+    upload_file(page.ele("#file-input"), r"{upload_file}", launch_info=launch_info)
     result_text = ""
     for _ in range(40):
         result_text = page.run_js(
@@ -274,6 +270,7 @@ try:
         page.ele("#download-btn"),
         run,
         rename="smoke-test.txt",
+        launch_info=launch_info,
     )
     print(f"[smoke] download -> {{run}}")
     mark_script_status("ok")
@@ -306,7 +303,12 @@ def _lib_loader_web_page() -> str:
 import sys
 from pathlib import Path
 sys.path.insert(0, r"{WORKSPACE / 'lib'}")
-from connect import connect_web_page, parse_port
+from connect import (
+    build_default_browser_profile,
+    get_default_browser_provider,
+    parse_port,
+    start_profile_and_connect_web_page,
+)
 from output import site_run_dir
 from utils import save_json, mark_script_status
 '''
@@ -317,7 +319,9 @@ def _script_web_page_sync(base_url: str) -> str:
 import json as _json
 try:
     run = site_run_dir("{SITE}", "web-page-sync")
-    page = connect_web_page(parse_port())   # d 模式（浏览器）
+    provider = get_default_browser_provider()
+    browser_profile = build_default_browser_profile(provider, parse_port())
+    _, page = start_profile_and_connect_web_page(provider, browser_profile, mode="d")
 
     # 在 d 模式下导航到 fixture 域（建立 cookie 上下文）
     page.get("{base_url}/basic.html")
@@ -563,7 +567,7 @@ BROWSER_REQUIRED_CASES = frozenset(ALL_CASES) - {"session-page"}
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="dp local smoke runner")
-    parser.add_argument("--port", default="9222", help="浏览器远程调试端口（默认 9222）")
+    parser.add_argument("--port", default=None, help="当默认 provider 为 cdp-port 时必填的浏览器远程调试端口")
     parser.add_argument("--fixture-port", type=int, default=18080, help="本地 fixture HTTP 端口（默认 18080）")
     parser.add_argument("--case", default=None, choices=ALL_CASES, help="只运行指定 case")
     args = parser.parse_args()
@@ -579,10 +583,19 @@ def main() -> None:
 
     # 3. 按 case 判断是否需要浏览器
     need_browser = any(c in BROWSER_REQUIRED_CASES for c in cases_to_run)
-    if need_browser and not _check_browser(args.port):
-        print(f"[dp smoke] 无法连接到浏览器（端口 {args.port}）。", file=sys.stderr)
-        print("[dp smoke] 请先运行 start-chrome-cdp.bat（或等效脚本）启动带调试端口的 Chrome。", file=sys.stderr)
-        sys.exit(2)
+    default_provider = _get_default_provider()
+    port = _normalize_port(args.port)
+    if need_browser and default_provider == DEFAULT_FALLBACK_PROVIDER:
+        if port is None:
+            print(
+                "[dp smoke] 当前工作区默认 provider 为 cdp-port，必须显式传入 --port <port>。",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if not _check_browser(port):
+            print(f"[dp smoke] 无法连接到浏览器（端口 {port}）。", file=sys.stderr)
+            print("[dp smoke] 请先运行 start-chrome-cdp.bat（或等效脚本）启动带调试端口的 Chrome。", file=sys.stderr)
+            sys.exit(2)
 
     # 4. 清理将要运行的 case 的历史产物，防止脚本失败时旧产物误报 PASS
     import shutil
@@ -634,7 +647,7 @@ def main() -> None:
     results: list[tuple[str, bool, str]] = []
     for case in cases_to_run:
         print(f"\n[dp smoke] ── {case} ──")
-        script_ok = _run_script(scripts[case](), args.port)
+        script_ok = _run_script(scripts[case](), port)
         ok, detail = verifiers[case]()
         status = "PASS" if (script_ok and ok) else "FAIL"
         results.append((case, status == "PASS", detail if ok else f"脚本{'OK' if script_ok else '失败'}，contract：{detail}"))
