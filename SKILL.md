@@ -5,8 +5,8 @@ description: >
 compatibility: >
   需要宿主客户端能够读取此 skill、运行本地 Python 与 shell 命令、读取 bundled scripts/references，并在目标工作区写文件。默认假设 Python 3.10+、可写文件系统、以及可连接本地 Chromium 调试地址的环境。若客户端要接入自定义 browser provider，应在工作区提供 `.dp/providers/<name>.py` 实现，并能访问它依赖的本地 API 或 launcher；若最终使用 fallback `cdp-port`，则必须显式提供测试端口。
 metadata:
-  bundle-version: "2026-04-01.3"
-  runtime-lib-version: "2026-04-01.3"
+  bundle-version: "2026-04-27.1"
+  runtime-lib-version: "2026-04-27.1"
 ---
 
 # 浏览器自动化

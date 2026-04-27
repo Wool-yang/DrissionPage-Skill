@@ -435,6 +435,22 @@ def _set_browser_download_path(ele: ChromiumElement, browser_path: str) -> None:
     )
 
 
+def restore_browser_download_behavior(owner, browser, orig_browser_path, orig_owner_path) -> None:
+    """Restore DrissionPage cached paths and clear the temporary CDP download override."""
+    if orig_browser_path is not None:
+        set_download_path(browser, orig_browser_path)
+    if not is_download_path_missing(orig_owner_path):
+        set_download_path(owner, orig_owner_path)
+    try:
+        run_browser_cdp(
+            browser,
+            "Browser.setDownloadBehavior",
+            behavior="default",
+        )
+    except Exception:
+        pass
+
+
 def _trigger_download_click(ele: ChromiumElement, *, timeout: int, by_js: bool = False) -> None:
     """触发下载点击；默认原生点击，必要时显式走 JS click。"""
     if by_js:
@@ -547,21 +563,7 @@ def download_file(
                 interceptor.cleanup()
             except Exception:
                 pass
-        # 恢复浏览器原始下载目录，避免持久污染用户会话
-        if _orig_browser_path is not None:
-            set_download_path(_browser, _orig_browser_path)
-            if not is_download_path_missing(_orig_owner_path):
-                set_download_path(_owner, _orig_owner_path)
-            try:
-                run_browser_cdp(
-                    _browser,
-                    "Browser.setDownloadBehavior",
-                    downloadPath=_orig_browser_path,
-                    behavior="allow",
-                    eventsEnabled=True,
-                )
-            except Exception:
-                pass  # 恢复失败不阻塞主流程
+        restore_browser_download_behavior(_owner, _browser, _orig_browser_path, _orig_owner_path)
     return final_path
 
 

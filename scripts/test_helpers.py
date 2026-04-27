@@ -1610,10 +1610,11 @@ def test_download_file_wrapper() -> None:
         repr(ele.owner._download_path),
     )
     check(
-        "download raw: restore 走 Browser.setDownloadBehavior",
+        "download raw: restore 撤销 CDP 下载覆盖",
         any(
             method == "Browser.setDownloadBehavior"
-            and kwargs.get("downloadPath") == "/fake/browser-downloads"
+            and kwargs.get("behavior") == "default"
+            and "downloadPath" not in kwargs
             for method, kwargs in ele.owner.browser_cdp_calls
         ),
         repr(ele.owner.browser_cdp_calls),
