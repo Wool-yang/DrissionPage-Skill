@@ -11,7 +11,7 @@ import io
 import os
 import sys
 import tempfile
-from contextlib import redirect_stderr
+from contextlib import nullcontext, redirect_stderr
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -1588,14 +1588,28 @@ def test_download_file_wrapper() -> None:
         target.owner._browser._download_path = browser_path
         target.owner._download_path = browser_path
 
-    with tempfile.TemporaryDirectory() as d, _mock.patch.object(
-        _utils_mod, "_set_browser_download_path", _fake_set_download_path
-    ), _mock.patch.object(
-        _utils_mod, "_wait_download_complete", lambda *args, **kwargs: Path(d) / "report.txt"
-    ):
-        final_path = download_file(ele, d, rename="report.txt", timeout=9, launch_info=launch_info)
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            expected = browser_download_path(Path(d), ele, launch_info=launch_info)
+            browser_path_context = nullcontext()
+        except RuntimeError as exc:
+            if "无法确定 WSL distro" not in str(exc):
+                raise
+            # GitHub Linux runners are not WSL, so a Windows browser cannot consume /tmp.
+            # The path conversion behavior is covered separately; this test only needs
+            # a browser path to exercise the raw-CDP wrapper flow.
+            expected = r"G:\fake-downloads"
+            browser_path_context = _mock.patch.object(
+                _utils_mod, "browser_download_path", return_value=expected
+            )
 
-    expected = browser_download_path(Path(d), ele, launch_info=launch_info)
+        with browser_path_context, _mock.patch.object(
+            _utils_mod, "_set_browser_download_path", _fake_set_download_path
+        ), _mock.patch.object(
+            _utils_mod, "_wait_download_complete", lambda *args, **kwargs: Path(d) / "report.txt"
+        ):
+            final_path = download_file(ele, d, rename="report.txt", timeout=9, launch_info=launch_info)
+
     check("download raw: 目录路径已规范化", captured.get("browser_path") == expected, repr(captured))
     check("download raw: 走原生点击", ele.click_calls == [False], repr(ele.click_calls))
     check("download raw: 返回最终路径", Path(final_path).name == "report.txt", repr(final_path))
