@@ -2,164 +2,223 @@
 
 **[中文](README.md)**
 
-A browser automation Skill for any client framework that supports the Skill specification. Built on [DrissionPage](https://github.com/g1879/DrissionPage), it acquires and attaches to a connectable Chromium debug address through browser providers to perform screenshots, scraping, login, form filling, file upload/download, and more.
+`dp` is a browser automation Skill for Skill-capable clients. It is built on
+[DrissionPage](https://github.com/g1879/DrissionPage), acquires a connectable Chromium
+debug address through a browser provider, and attaches to that browser for screenshots,
+scraping, login, form filling, file upload/download, new-tab workflows, and related web tasks.
+
+This repository publishes the universal source bundle. `SKILL.md` is the agent-facing execution
+contract, `templates/` contains runtime helpers, and `references/` contains templates and API notes
+that agents read only when needed. Runtime state is generated in the consuming project's `.dp/`
+workspace, not in this source repository.
 
 ---
 
-## Core Philosophy
+## Design Model
 
-- **Provider-first**: Resolve a browser provider first, then attach through the debug address it returns. Plain remote-debugging port attachment is also modeled as the `cdp-port` provider.
-- **Provider-extensible**: For fingerprint browsers such as AdsPower or local launcher-driven browsers, the `dp` core only provides the provider contract and loader. The actual provider implementation lives in the workspace as `.dp/providers/<name>.py`, then DrissionPage attaches through the returned debug address.
-- **Reuse, don't rewrite**: Automation scripts are saved per-site and reused on subsequent similar tasks instead of being regenerated.
-- **Native interaction first**: Clicks and inputs use DrissionPage's built-in native interaction chain — no raw DOM event manipulation, closer to real user behavior.
+### Provider-first
 
-## What It Can Do
+Browser tasks resolve a browser provider first, then attach through the debug address returned by
+that provider. Plain remote-debugging port attachment is modeled as the runtime-managed
+`cdp-port` provider instead of being special-cased in every script.
+
+### Extensible Providers
+
+The `dp` core provides the provider contract and loader only. It does not embed private APIs for
+AdsPower, fingerprint browsers, or specific launchers. Custom providers live in the target
+workspace as `.dp/providers/<name>.py` and are maintained by the client or user.
+
+### Reuse First
+
+Site scripts are saved under `.dp/projects/<site>/scripts/`. Later tasks for the same site, intent,
+or URL family should reuse or repair existing scripts first, preserving login flows, stable
+selectors, historical fixes, and site-specific knowledge.
+
+### Native Interaction First
+
+Clicks, inputs, uploads, downloads, and new-tab handling should use DrissionPage / CDP native
+capabilities first. JavaScript clicks, direct `value` mutation, and manually dispatched DOM events
+are last-resort fallbacks.
+
+---
+
+## Capabilities
 
 | Task | Examples |
-|------|---------|
-| Screenshot | Full-page, region-specific |
-| Scrape | List extraction, paginated scraping |
-| Login | Username/password, session persistence |
-| Form | Fill and submit forms |
-| Upload | File upload (direct input + file chooser) |
-| Download | File download (with cross-platform path handling) |
-| New tab | Open links and interact with new tabs |
-| Hybrid mode | Browser login + efficient requests |
-| Fingerprint browsers | Start or locate a browser via a workspace provider, then attach |
+|------|----------|
+| Screenshot | Full-page, element, and region screenshots |
+| Scrape | List extraction, detail extraction, paginated scraping |
+| Login | Username/password login, reuse an already logged-in browser |
+| Form | Fill fields, submit forms, save result screenshots |
+| Upload | Normalize local file paths and fill upload controls |
+| Download | Single-target downloads, semantic filenames, cross-platform download paths |
+| New tab | Click a link, switch to the new tab, and continue work |
+| Hybrid mode | Browser login plus cookie sync into requests/session mode |
+| Custom provider | Start or locate a browser through a workspace provider, then attach |
 
-## Installation
+---
+
+## Quick Start
 
 ### Prerequisites
 
-- Any client framework that supports the Skill specification (e.g. Claude Code, Codex, or other compatible implementations)
+- A client framework that supports the Skill specification, such as Claude Code, Codex, or another compatible implementation
 - Python 3.10+
-- If the default provider is `cdp-port`, Chromium / Chrome must already expose a remote debugging port
+- A writable project directory where `.dp/` can be created
+- If the effective default provider is `cdp-port`, a Chromium / Chrome instance already exposing a remote debugging port
 
 ### Install the Skill
 
 ```bash
-# Clone the repo
 git clone https://github.com/Wool-yang/DrissionPage-Skill.git
+cd DrissionPage-Skill
 
-# Install to your client's skill directory (adjust the path as needed)
+# Install to your client's skill directory. Adjust the path for your client.
 python scripts/install.py --target /path/to/skills/dp
 ```
 
-### Initialize the Workspace
+### Initialize a Workspace
 
-Run this in your project root to create the `.dp/` workspace (includes virtual environment and runtime libs):
+Run this from the project root where browser tasks should execute:
 
 ```bash
 python /path/to/skills/dp/scripts/doctor.py
 ```
 
-### Enable Browser Remote Debugging
+This creates `.dp/` in the current project root, including the virtual environment, runtime helpers,
+default provider, configuration, and version state. `.dp/` is local runtime state and should not be
+committed to version control.
+
+### Attach with `cdp-port`
+
+If no custom provider is configured, the workspace default provider is `cdp-port`. It does not
+launch a browser; it only attaches to an already running Chromium / Chrome instance with remote
+debugging enabled.
 
 ```bash
 # macOS / Linux
 google-chrome --remote-debugging-port=<port> --user-data-dir=/tmp/chrome-debug
 
-# Windows (PowerShell)
+# Windows PowerShell
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
   --remote-debugging-port=<port> --user-data-dir="$env:TEMP\chrome-debug"
 ```
 
-Generic workflow templates inherit the workspace `default_provider` from `.dp/config.json` by default.
-Clients or users can switch it to another workspace provider; an explicit test port is only required when the effective default remains `cdp-port`.
+When the effective default provider remains `cdp-port`, scripts must receive an explicit port,
+for example `--port <port>`. `dp` does not silently scan common ports.
+
+### Switch to a Custom Provider
+
+Provide a workspace provider implementation:
+
+```text
+.dp/providers/<name>.py
+```
+
+Then update `.dp/config.json`:
+
+```json
+{
+  "default_provider": "<name>"
+}
+```
+
+Generic workflow templates inherit this default provider. A script should pin a provider name only
+when the task explicitly depends on that provider. See `references/provider-contract.md` for the
+provider contract.
+
+---
 
 ## Usage
 
-Once installed and initialized, describe your task in natural language inside a supported client:
+After installation and workspace initialization, describe the task naturally in a supported client:
 
 > "Take a full-page screenshot of https://news.ycombinator.com"
 >
-> "Scrape all product names and prices from this page, save as JSON"
+> "Scrape all product names and prices from the current page and save them as JSON"
 >
-> "Log me into this site, username is xxx"
+> "I am already logged in; reuse the current browser session to request the orders API"
 
-The Skill will automatically:
-1. Check workspace version and upgrade if needed
-2. Resolve the default provider and acquire a debug address through it
-3. Look for previously saved scripts for this site/task and reuse them
-4. Generate and execute the automation script
-5. Save output to `.dp/projects/<site>/output/<task>/<timestamp>/`
+When an agent uses `dp`, it typically:
 
-If a task depends on a specific provider, the client or script can pin it explicitly; generic templates otherwise inherit the workspace default.
+1. Checks whether `.dp/` is ready and runs doctor when needed
+2. Resolves the default provider and acquires a debug address through it
+3. Chooses `ChromiumPage`, `WebPage`, or `SessionPage`
+4. Searches for saved scripts and reuses or repairs them first
+5. Generates and runs a temporary script only when needed
+6. Saves output under `.dp/projects/<site>/output/<script-name>/<timestamp>/`
+7. Saves reusable workflows and maintains the managed section of the site README
 
-## Repository Structure
+---
 
-```
+## Source Bundle Layout
+
+```text
 .
-├── SKILL.md                  # Skill descriptor (read by any Skill-spec-compatible client)
-├── templates/                # Runtime library (copied to .dp/lib/ during workspace init)
-│   ├── connect.py            # Browser connection helper
+├── SKILL.md                    # Agent-facing execution contract
+├── templates/                  # Runtime library copied to .dp/lib/ by doctor
+│   ├── connect.py              # Provider-first browser connection helpers
 │   ├── download_correlation.py # Single-target download request-correlation layer
-│   ├── output.py             # Output path management
-│   ├── utils.py              # Common operations (screenshot, click, input, upload, download)
-│   ├── _dp_compat.py         # DrissionPage internal API compatibility shim
+│   ├── output.py               # Run directory and output path management
+│   ├── utils.py                # Screenshot, click, input, upload, and download helpers
+│   ├── _dp_compat.py           # Compatibility shim for DrissionPage internals
 │   └── providers/
-│       └── cdp-port.py       # Runtime-managed fallback provider template
-├── scripts/                  # Management tools
-│   ├── doctor.py             # Workspace init and health check
-│   ├── install.py            # Bundle sync installer
-│   ├── list-scripts.py       # Enumerate saved scripts
-│   ├── smoke.py              # Automated acceptance tests
-│   ├── test_helpers.py       # Unit test suite
-│   └── validate_bundle.py    # Pre-release bundle validation
-├── references/               # Agent reference docs
-│   ├── workflows.md          # Workflow code templates
-│   ├── provider-contract.md  # Workspace provider contract
-│   ├── mode-selection.md     # Object selection decision matrix
-│   ├── interface.md          # DrissionPage API quick reference
-│   └── site-readme.md        # Site README specification
-└── evals/                    # Evaluation and acceptance
-    ├── evals.json            # 11 minimal smoke prompts
-    └── smoke-checklist.md    # Manual acceptance checklist
+│       └── cdp-port.py         # Runtime-managed fallback provider
+├── scripts/                    # Install, doctor, smoke, and validation tools
+├── references/                 # Agent reference docs, read on demand
+└── evals/                      # Minimal smoke prompts and manual acceptance checklist
 ```
 
-## Client Adaptation & Optional Supplementary Files
+## Workspace Layout
 
-This repo only defines the universal `dp` bundle content and runtime contract. It is not tied to any specific client framework. Different clients may **optionally** add client-specific files to the install directory before use. These files belong to the client-side adapter layer and are not part of the cross-client core contract.
-
-### 1. Codex
-
-For Codex-specific directory layout, discovery locations, optional metadata files, and invocation rules, follow the official OpenAI docs:
-
-- https://developers.openai.com/codex/skills
-
-### 2. Claude Code
-
-For Claude Code-specific skill directories, frontmatter extensions, and invocation rules, follow the official Anthropic docs:
-
-- https://docs.anthropic.com/en/docs/claude-code/skills
-
-### Compatibility Guarantee
-
-`scripts/install.py` only syncs upstream bundle files, preserving any files in the target directory that are not part of the upstream manifest. Client-specific supplementary files coexist with the `dp` bundle and are not removed during normal upgrades.
-
-## Workspace Directory (`.dp/`)
-
-```
+```text
 .dp/
-├── .venv/                    # Auto-created Python virtual environment
-├── lib/                      # Runtime library copy (managed by doctor.py)
+├── .venv/                      # Auto-created Python virtual environment
+├── lib/                        # Runtime library copy managed by doctor
+├── providers/                  # Workspace provider implementations
 ├── tmp/
-│   ├── _run.py               # Temporary script for current execution
-│   └── _out/                 # Temporary output
+│   ├── _run.py                 # Temporary script for the current execution
+│   └── _out/                   # Temporary output
 ├── projects/
 │   └── <site-name>/
-│       ├── README.md         # Site index
-│       ├── scripts/          # Saved reusable scripts
-│       └── output/           # Execution output archived by task and timestamp
-└── state.json                # Version state (used by preflight check)
+│       ├── README.md           # Site index; Scripts section is agent-managed
+│       ├── scripts/            # Saved reusable scripts
+│       └── output/             # Execution outputs archived by task and timestamp
+├── config.json                 # Workspace config, including default_provider
+└── state.json                  # Bundle/runtime version state
 ```
 
-> `.dp/` contains local runtime artifacts and should not be committed to version control.
+`.dp/` belongs to the local workspace. It may contain virtual environments, runtime state, browser
+profile-related data, or task outputs. Do not publish it as part of the source bundle.
+
+---
+
+## Client Adaptation
+
+This repository defines the cross-client bundle and runtime contract. It is not tied to a single
+client framework. Different clients may keep their own adapter files in the installed skill
+directory; those files belong to the client adapter layer and are not part of the `dp` core contract.
+
+- Codex: follow the official OpenAI Codex Skills documentation (https://developers.openai.com/codex/skills)
+- Claude Code: follow the official Anthropic Claude Code Skills documentation (https://docs.anthropic.com/en/docs/claude-code/skills)
+
+`scripts/install.py` syncs upstream bundle files while preserving target files that are not part of
+the upstream manifest. Client-specific supplementary files can coexist with the `dp` bundle and are
+not removed during normal upgrades.
+
+---
+
+## Development and Release
+
+- When changing runtime templates (`templates/`), bump both `runtime-lib-version` and `bundle-version`
+- When changing only docs, scripts, or references, bump only `bundle-version`
+- Run `scripts/validate_bundle.py` before release
+- See `CONTRIBUTING_EN.md` for the full rules
 
 ## Dependencies
 
-- [DrissionPage](https://github.com/g1879/DrissionPage) (`>=4.1.1,<4.2`): The core browser automation library. The runtime library and workflow design in this project are built on DrissionPage's API.
-- Python standard library (no other third-party dependencies)
+- [DrissionPage](https://github.com/g1879/DrissionPage) `>=4.1.1,<4.2`
+- Python standard library
 
 ## License
 

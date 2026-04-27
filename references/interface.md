@@ -1,8 +1,14 @@
-> **适配版本**：本文档已在 DrissionPage **4.1.1.x**（当前实测 4.1.1.2）下验证。
-> 若使用更高版本，请先检查 `templates/_dp_compat.py` 中标注"依赖 DrissionPage 私有实现"的函数是否仍然有效。
-> 私有 API（`_browser`、`_download_path`、`_run_cdp` 等）在非 major 版本间有静默变动风险。
-
 # DrissionPage 接口速查
+
+当编写或修改 workflow 脚本，需要快速确认 DrissionPage 常用 API 写法时，读取本文。
+
+本文是面向 `dp` source bundle 的精简速查，不追求覆盖全部 DrissionPage API。
+优先使用 `templates/utils.py` 中的 bundled helper；只有 helper 不覆盖当前需求时，
+再参考这里直接调用 DrissionPage 接口。
+
+> **适配版本**：本文档以 DrissionPage **4.1.1.x**（已验证 4.1.1.2）为基准。
+> 若升级到更高版本，请先检查 `templates/_dp_compat.py` 中标注“依赖 DrissionPage 私有实现”的函数。
+> 私有 API（`_browser`、`_download_path`、`_run_cdp` 等）在非 major 版本间也可能静默变动。
 
 ## 目录
 
@@ -15,14 +21,21 @@
 
 ---
 
-渐进式三层结构：从最常用到高级特性，按需查阅。
-这是面向 source bundle 分发的精简速查，不追求覆盖全部 API；优先看 Layer 1 和 Layer 2，只有确实需要时再进入高级特性。
+本文按渐进披露组织：
+
+- Layer 1：写脚本时最常用的操作
+- Layer 2：按类别查具体 API
+- Layer 3：只有任务需要时才进入的高级能力
+
+不要在普通点击、输入、上传、下载任务中绕开 bundled helper；helper 已经包含等待链、
+跨平台路径处理和 `dp` 的运行时边界。
 
 ---
 
 ## 默认交互原则
 
-- 优先原生交互和显式等待，尽量不要手写 DOM 事件、直接改 `value`、直接改状态
+- 优先原生交互和显式等待
+- 尽量不要手写 DOM 事件、直接改 `value`、直接改状态
 - 点击默认顺序：`ele.wait.clickable()` -> `ele.scroll.to_see()` -> `ele.wait.stop_moving()` -> `ele.wait.not_covered()` -> `ele.click(by_js=False)`
 - 输入默认顺序：`ele.scroll.to_see()` -> `ele.wait.clickable()` -> `ele.focus()` -> `ele.clear(by_js=False)` -> `ele.input(text, clear=False, by_js=False)`
 - 需要更像真实键入时，优先 `page.actions.type()` / `page.actions.input()`

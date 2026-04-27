@@ -1,6 +1,20 @@
 # Workspace Provider Contract
 
-`dp` runtime 只认工作区 provider 文件。普通远程调试端口接入也被收编为工作区 provider `cdp-port.py`。
+当任务需要接入指纹浏览器、本地 launcher、客户端自带 browser manager，
+或任何不是“直接给一个调试端口”的浏览器来源时，读取本文。
+
+`dp` 的 provider 设计目标是把“如何启动或定位浏览器”限制在工作区 provider 内部，
+让 workflow 只消费标准化的调试地址和 metadata。普通远程调试端口也被收编为
+runtime-managed `cdp-port` provider，因此业务脚本不需要维护两套连接逻辑。
+
+## 核心模型
+
+- runtime 只认工作区 provider 文件
+- provider 负责启动或定位目标浏览器
+- provider 返回可连接的 `host:port`
+- runtime 用 DrissionPage 接管该调试地址
+- 高层 workflow 只消费标准化 `launch_info`
+- raw provider result 是 provider 私有对象，不写入输出目录或状态文件
 
 ## 目录与命名
 
@@ -13,8 +27,8 @@
 
 ## 默认 provider
 
-- 工作区默认 provider 存放在 `.dp/config.json` 的 `default_provider`
-- `doctor.py` 首次初始化时会写入：
+工作区默认 provider 存放在 `.dp/config.json` 的 `default_provider`。
+`doctor.py` 首次初始化时会写入：
 
 ```json
 {
@@ -22,11 +36,15 @@
 }
 ```
 
-- 用户或客户端可以把它改成别的工作区 provider，例如 `chrome-cdp`
-- 通用 workflow 模板默认通过 `get_default_browser_provider()` 继承这个值；只有任务明确依赖某个 provider 时才应在脚本里固定 provider 名
-- 如果默认 provider 最终为 `cdp-port`，则必须显式提供测试端口
+用户或客户端可以把它改成别的工作区 provider，例如 `chrome-cdp`。
+通用 workflow 模板默认通过 `get_default_browser_provider()` 继承这个值；
+只有任务明确依赖某个 provider 时，脚本才应固定 provider 名。
+
+如果默认 provider 最终为 `cdp-port`，必须显式提供测试端口。`dp` 不扫描默认端口列表。
 
 ## 最小接口
+
+每个 provider 至少实现两个函数：
 
 ```python
 from typing import Any, Mapping
@@ -46,17 +64,26 @@ def extract_debug_address(start_result: Any) -> str:
     ...
 ```
 
-可选接口：
+可选 metadata 接口：
 
 ```python
 def extract_metadata(start_result: Any) -> Mapping[str, Any] | None:
     ...
 ```
 
-## 文件访问 hints（对文件 helper 兼容性为条件必需）
+## Contract 语义
 
-如果某个 provider 希望正式兼容 `upload_file()` / `download_file()` 这类本地文件 helper，
-则应在 `extract_metadata()` 中返回以下 hints：
+- `start_profile()` 负责启动或定位目标浏览器，并返回 provider 私有结果对象
+- `extract_debug_address()` 从该结果对象中提取可连接的 `host:port`
+- `extract_metadata()` 只返回可安全持久化、可给 helper 消费的字段；不需要时可以省略
+- `start_result` 是 opaque result，不要求是 `dict`，也不要求可 JSON 序列化
+- provider 可以通过本地 API、本地 launcher、已有调试端口或客户端能力获取浏览器
+- provider 内部可以有自己的默认 `base_url` 或 launcher 配置；通用 runtime 不替具体 provider 设默认值
+
+## 文件访问 hints
+
+如果 provider 希望正式兼容 `upload_file()` / `download_file()` 这类本地文件 helper，
+应在 `extract_metadata()` 中返回文件访问 hints：
 
 ```python
 {
@@ -66,22 +93,17 @@ def extract_metadata(start_result: Any) -> Mapping[str, Any] | None:
 }
 ```
 
-说明：
+这些字段不是最小连接 contract 的必填项。只做“连接浏览器”的 provider 可以不提供。
+但如果 provider 要声明自己与本地上传/下载 helper 正式兼容，就应提供这些 hints。
 
-- 这些字段不是 provider 最小连接 contract 的必填项；provider 只做“连接浏览器”时可以不提供
-- 但如果 provider 要声称自己与 `upload_file()` / `download_file()` 正式兼容，就应提供这些 hints
-- `dp` 的 upload/download helper 在 workflow 传入 `launch_info` 时，会优先消费这些 hints
-- `file_access_mode == "remote"` 表示 provider 不具备本地文件访问能力，helper 应直接报错
-- 未提供 hints 时，helper 只能退回到保守 heuristics；这对本机浏览器通常够用，但不应被视为 provider 已正式声明文件 helper 兼容性
+helper 行为：
 
-## Contract 语义
+- workflow 传入 `launch_info` 时，`upload_file()` / `download_file()` 优先消费 provider hints
+- `file_access_mode == "remote"` 表示 provider 不具备本地文件访问能力，helper 直接报错
+- 未提供 hints 时，helper 只能退回到保守 heuristics
+- 保守 heuristics 对本机浏览器通常够用，但不等于 provider 已声明正式兼容文件 helper
 
-- `start_profile()` 负责启动目标浏览器，并返回 provider 私有结果对象
-- `extract_debug_address()` 负责从该结果对象中提取可连接的 `host:port`
-- `extract_metadata()` 只返回可安全持久化的字段；不需要时可以省略
-- `start_result` 是 opaque result，不要求是 `dict`，也不要求可 JSON 序列化
-
-## Runtime-Managed `cdp-port` Provider
+## Runtime-Managed `cdp-port`
 
 `cdp-port` 是 runtime-managed fallback provider：
 
@@ -104,6 +126,7 @@ def extract_metadata(start_result: Any) -> Mapping[str, Any] | None:
 - 通用层允许传入 `base_url`，但不为任何具体 provider 提供默认值
 - 具体 provider 的默认 base URL 只能写在 provider 文件内部
 - launcher-style provider 可以完全不使用 `base_url`
+- 业务脚本不要直接调用 provider 私有 API；使用 runtime 的 provider-first helper
 
 ## 持久化边界
 
@@ -119,9 +142,12 @@ def extract_metadata(start_result: Any) -> Mapping[str, Any] | None:
 }
 ```
 
-禁止把 raw `start_result` 直接写入输出目录或状态文件。
+禁止把 raw `start_result` 直接写入输出目录或状态文件。它可能包含 provider 私有结构、
+临时凭据、进程对象、不可序列化对象或无稳定兼容承诺的字段。
 
 ## API Provider 模板
+
+适用于通过本地 HTTP API 或客户端 API 启动/定位浏览器的 provider：
 
 ```python
 from __future__ import annotations
@@ -158,6 +184,8 @@ def extract_metadata(start_result: Any) -> Mapping[str, Any] | None:
 ```
 
 ## Launcher Provider 模板
+
+适用于 provider 负责调用本地 launcher，或包装已有启动脚本的场景：
 
 ```python
 from __future__ import annotations
