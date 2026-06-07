@@ -1354,13 +1354,15 @@ def test_browser_upload_path_wsl_drive_mount() -> None:
 def test_browser_upload_path_wsl_unc() -> None:
     """WSL 下非 /mnt/<drive>/ 路径应转换为 \\\\wsl$ UNC 路径。"""
     owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-    src = "/tmp/dp-upload-fixture.txt"
-    with _mock.patch.dict(
-        os.environ, {"WSL_DISTRO_NAME": "TestDistro"}, clear=False
-    ), _mock.patch.object(_utils_mod, "_path_exists_local", return_value=True):
-        result = browser_upload_path(src, owner)
-    expected = "\\\\wsl$\\TestDistro\\tmp\\dp-upload-fixture.txt"
-    check("upload path: WSL UNC", result == expected, repr(result))
+    with tempfile.NamedTemporaryFile() as f:
+        src = Path(f.name).resolve().as_posix()
+        if not src.startswith("/") or src.startswith("/mnt/"):
+            check("upload path: WSL UNC（非 POSIX 临时路径，跳过）", True, "skipped")
+            return
+        with _mock.patch.dict(os.environ, {"WSL_DISTRO_NAME": "TestDistro"}, clear=False):
+            result = browser_upload_path(src, owner)
+        expected = "\\\\wsl$\\TestDistro" + src.replace("/", "\\")
+        check("upload path: WSL UNC", result == expected, repr(result))
 
 
 def test_browser_upload_path_linux_passthrough() -> None:
@@ -1473,25 +1475,34 @@ def test_get_wsl_distro_name_falls_back_to_wsl_exe() -> None:
 def test_browser_upload_path_wsl_distro_fallback_reaches_unc_output() -> None:
     """wsl.exe 回退得到的 distro 名必须真正进入最终 UNC 输出。"""
     owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-    src = "/tmp/dp-upload-fallback.txt"
-    with _mock.patch.dict(
-        os.environ, {"WSL_DISTRO_NAME": ""}, clear=False
-    ), _mock.patch.object(
-        _utils_mod.subprocess,
-        "check_output",
-        return_value="TestDistro\n",
-        create=True,
-    ), _mock.patch.object(_utils_mod, "_path_exists_local", return_value=True):
-        result = browser_upload_path(
-            src,
-            owner,
-            launch_info={"provider_metadata": {"browser_os": "windows"}},
+    with tempfile.NamedTemporaryFile() as f:
+        src = Path(f.name).resolve().as_posix()
+        if not src.startswith("/") or src.startswith("/mnt/"):
+            check(
+                "upload path: wsl.exe 回退结果真正进入最终 UNC 输出（非 POSIX 临时路径，跳过）",
+                True,
+                "skipped",
+            )
+            return
+        with _mock.patch.dict(
+            os.environ, {"WSL_DISTRO_NAME": ""}, clear=False
+        ), _mock.patch.object(
+            _utils_mod.subprocess,
+            "check_output",
+            return_value="TestDistro\n",
+            create=True,
+        ):
+            result = browser_upload_path(
+                src,
+                owner,
+                launch_info={"provider_metadata": {"browser_os": "windows"}},
+            )
+        expected = "\\\\wsl$\\TestDistro" + src.replace("/", "\\")
+        check(
+            "upload path: wsl.exe 回退结果真正进入最终 UNC 输出",
+            result == expected,
+            repr(result),
         )
-    check(
-        "upload path: wsl.exe 回退结果真正进入最终 UNC 输出",
-        result.startswith("\\\\wsl$\\TestDistro\\"),
-        repr(result),
-    )
 
 
 def test_browser_upload_path_windows_browser_requires_distro_for_posix_path() -> None:
