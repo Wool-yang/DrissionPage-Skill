@@ -33,8 +33,15 @@ MANIFEST_FILE = ".dp-install-manifest"
 
 _EXCLUDE_NAMES = {".git", ".github", "__pycache__", ".dp", ".venv", ".gitignore"}
 _EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
-# 仅排除 source root 顶层的运行态目录；不传入递归调用，允许合法子目录使用同名
+# 仅排除 source root 顶层的运行态/本地草稿目录；不传入递归调用，允许合法子目录使用同名
 _EXCLUDE_ROOT_NAMES: frozenset[str] = frozenset({"projects", "output"})
+_EXCLUDE_REL_PREFIXES: tuple[str, ...] = ("docs/superpowers/",)
+
+
+def _is_excluded_rel(path: Path, base: Path) -> bool:
+    """检查相对路径是否属于不应安装的本地草稿子树。"""
+    rel = path.relative_to(base).as_posix()
+    return rel in {prefix.rstrip("/") for prefix in _EXCLUDE_REL_PREFIXES} or rel.startswith(_EXCLUDE_REL_PREFIXES)
 
 
 def _read_manifest(target: Path) -> set[str]:
@@ -68,6 +75,8 @@ def _collect_source_files(src: Path, base: Path | None = None,
             continue
         if item.name in root_skip:
             continue
+        if _is_excluded_rel(item, base):
+            continue
         if item.is_dir():
             result.extend(_collect_source_files(item, base))
         else:
@@ -75,13 +84,17 @@ def _collect_source_files(src: Path, base: Path | None = None,
     return result
 
 
-def _sync_dir(src: Path, dst: Path, root_skip: frozenset[str] = frozenset()) -> int:
+def _sync_dir(src: Path, dst: Path, root_skip: frozenset[str] = frozenset(),
+              base: Path | None = None) -> int:
     """递归同步 src 到 dst。
 
     只写入 src 中存在的文件，不删除 dst 中独有的文件（保护客户端自定义）。
     root_skip 仅在第一层生效（不传入递归调用），用于排除 source root 顶层运行态目录。
     返回更新的文件数。
     """
+    if base is None:
+        base = src
+
     # 类型冲突：dst 当前是文件，但 src 是目录 → 先删文件，再 mkdir
     if dst.exists() and not dst.is_dir():
         dst.unlink()
@@ -92,9 +105,11 @@ def _sync_dir(src: Path, dst: Path, root_skip: frozenset[str] = frozenset()) -> 
             continue
         if item.name in root_skip:
             continue
+        if _is_excluded_rel(item, base):
+            continue
         dest = dst / item.name
         if item.is_dir():
-            count += _sync_dir(item, dest)  # root_skip 不传入递归调用
+            count += _sync_dir(item, dest, base=base)  # root_skip 不传入递归调用
         else:
             # 类型冲突：dest 当前是目录，但 src 是文件 → 先删目录，再复制
             if dest.is_dir():

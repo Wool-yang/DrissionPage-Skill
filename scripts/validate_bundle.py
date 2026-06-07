@@ -37,7 +37,7 @@ REQUIRED_FILES = [
     "references/mode-selection.md",
     "references/provider-contract.md",
     "references/workflow-discovery.md",
-    "references/workflows.md",
+    "references/action-templates.md",
     "references/site-readme.md",
     "evals/agent-behavior-evals.json",
     "evals/evals.json",
@@ -48,6 +48,8 @@ REQUIRED_FILES = [
     "evals/fixtures/newtab.html",
     "evals/fixtures/login.html",
 ]
+ACTION_TEMPLATES_REL = "references/action-templates.md"
+OLD_ACTION_TEMPLATES_REL = "references/" + "work" + "flows.md"
 FORBIDDEN_TEXT_PATTERNS = [
     "CLAUDE_SKILL_DIR",
     "$ARGUMENTS",
@@ -61,6 +63,7 @@ FORBIDDEN_TEXT_PATTERNS = [
 ]
 FORBIDDEN_PATH_PARTS = {"__pycache__"}
 FORBIDDEN_FILENAMES = {"list-scripts.sh"}
+LOCAL_DOC_PREFIXES = ("docs/superpowers/",)
 REMOVED_CONNECT_WRAPPER_PATTERNS = (
     re.compile(r"(?<![A-Za-z0-9_])connect_browser\("),
     re.compile(r"(?<![A-Za-z0-9_])connect_browser_fresh_tab\("),
@@ -143,6 +146,9 @@ def cleanup_bytecode(root: Path) -> None:
 
 def validate_forbidden_paths(root: Path) -> None:
     for path in root.rglob("*"):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith(LOCAL_DOC_PREFIXES):
+            continue
         if any(part in FORBIDDEN_PATH_PARTS for part in path.parts):
             fail(f"存在不应分发的缓存目录：{path}")
         if path.name in FORBIDDEN_FILENAMES:
@@ -165,6 +171,8 @@ def validate_forbidden_text(root: Path) -> None:
         if not path.is_file():
             continue
         rel = path.relative_to(root).as_posix()
+        if rel.startswith(LOCAL_DOC_PREFIXES):
+            continue
         if rel in _FORBIDDEN_TEXT_SKIP:
             continue
         if path.suffix not in {".md", ".py", ".json", ".gitignore"}:
@@ -329,7 +337,7 @@ def validate_output_contract(root: Path) -> None:
         "evals/evals.json",
         "evals/smoke-checklist.md",
         "SKILL.md",
-        "references/workflows.md",
+        "references/action-templates.md",
     ):
         text = (root / rel).read_text(encoding="utf-8")
         if old_pattern.search(text):
@@ -337,7 +345,7 @@ def validate_output_contract(root: Path) -> None:
 
 
 def validate_cross_file_consistency(root: Path) -> None:
-    """跨文件一致性校验：output.py 函数签名 / workflows.md 字段与导入。"""
+    """跨文件一致性校验：output.py 函数签名 / action-templates.md 字段与导入。"""
     output_py = (root / "templates" / "output.py").read_text(encoding="utf-8")
     if "def site_run_dir" not in output_py:
         fail("templates/output.py 缺少 site_run_dir() 函数")
@@ -354,26 +362,26 @@ def validate_cross_file_consistency(root: Path) -> None:
     if "def download_file" not in utils_py:
         fail("templates/utils.py 缺少 download_file() 函数")
 
-    workflows = (root / "references" / "workflows.md").read_text(encoding="utf-8")
+    workflows = (root / ACTION_TEMPLATES_REL).read_text(encoding="utf-8")
     if "site_run_dir" not in workflows:
-        fail("references/workflows.md 未引用 site_run_dir")
+        fail("references/action-templates.md 未引用 site_run_dir")
     if "upload_file" not in workflows:
-        fail("references/workflows.md 未使用 upload_file()")
+        fail("references/action-templates.md 未使用 upload_file()")
     if "download_file" not in workflows:
-        fail("references/workflows.md 未使用 download_file()")
+        fail("references/action-templates.md 未使用 download_file()")
     for field in ("site:", "workflow_summary:", "created:", "updated:", "intent:", "url:", "tags:", "last_run:", "status:"):
         if field not in workflows:
-            fail(f"references/workflows.md 通用脚本头缺少字段: {field}")
+            fail(f"references/action-templates.md 通用脚本头缺少字段: {field}")
     if "mark_script_status" not in workflows:
-        fail("references/workflows.md 未使用 mark_script_status()")
+        fail("references/action-templates.md 未使用 mark_script_status()")
 
     if re.search(r"(?m)^\s*task:", workflows):
-        fail("references/workflows.md 不应再使用 task: 脚本头字段，应改为 workflow_summary:")
+        fail("references/action-templates.md 不应再使用 task: 脚本头字段，应改为 workflow_summary:")
 
     # 下载 contract 校验：download_file() 已内置等待，禁止在其后再调下载管理器等待方法。
     # 校验范围：workflow 模板（用户参照物）+ smoke 脚本（bundled 示例）。
     _download_wait_ban = "page.browser.wait.downloads_done"
-    for _rel in ("references/workflows.md", "scripts/smoke.py"):
+    for _rel in ("references/action-templates.md", "scripts/smoke.py"):
         if _download_wait_ban in (root / _rel).read_text(encoding="utf-8"):
             fail(
                 f"{_rel} 不应包含 {_download_wait_ban}()——"
@@ -385,7 +393,7 @@ def validate_removed_connect_wrappers(root: Path) -> None:
     """canonical docs 不应再引用已移除的 legacy connect wrapper。"""
     for rel in (
         "SKILL.md",
-        "references/workflows.md",
+        "references/action-templates.md",
         "references/mode-selection.md",
         "evals/smoke-checklist.md",
     ):
@@ -407,8 +415,8 @@ def _extract_same_level_heading_section(text: str, heading: str) -> str:
 
 
 def validate_workflow_file_helper_contracts(root: Path) -> None:
-    """canonical workflows 的 upload/download contract 不应弱化 remote fail-fast 边界。"""
-    workflows = (root / "references" / "workflows.md").read_text(encoding="utf-8")
+    """canonical action templates 的 upload/download contract 不应弱化 remote fail-fast 边界。"""
+    workflows = (root / ACTION_TEMPLATES_REL).read_text(encoding="utf-8")
 
     upload_sec = _extract_same_level_heading_section(workflows, "## Template 5：文件上传（upload）")
     has_upload_boundary = (
@@ -420,7 +428,7 @@ def validate_workflow_file_helper_contracts(root: Path) -> None:
     )
     if not has_upload_boundary:
         fail(
-            "references/workflows.md 的 upload contract 缺少 remote file helper 的 fail-fast 边界"
+            "references/action-templates.md 的 upload contract 缺少 remote file helper 的 fail-fast 边界"
             "（应说明 upload_file(..., launch_info=launch_info) 在 provider 明确不支持本地文件访问时直接报错）"
         )
 
@@ -433,7 +441,7 @@ def validate_workflow_file_helper_contracts(root: Path) -> None:
     )
     if not has_download_boundary:
         fail(
-            "references/workflows.md 的 download contract 缺少 remote file helper 的 fail-fast 边界"
+            "references/action-templates.md 的 download contract 缺少 remote file helper 的 fail-fast 边界"
             "（应说明 download_file(..., launch_info=launch_info) 在 provider 明确不支持本地文件访问时直接报错）"
         )
 
@@ -441,7 +449,7 @@ def validate_workflow_file_helper_contracts(root: Path) -> None:
 def validate_workflow_discovery_contract(root: Path) -> None:
     """检查 workflow discovery 文档分层与关键约束。"""
     skill = (root / "SKILL.md").read_text(encoding="utf-8")
-    workflows = (root / "references" / "workflows.md").read_text(encoding="utf-8")
+    workflows = (root / ACTION_TEMPLATES_REL).read_text(encoding="utf-8")
     discovery = (root / "references" / "workflow-discovery.md").read_text(encoding="utf-8")
     site_readme = (root / "references" / "site-readme.md").read_text(encoding="utf-8")
     evals = (root / "evals" / "evals.json").read_text(encoding="utf-8")
@@ -449,10 +457,29 @@ def validate_workflow_discovery_contract(root: Path) -> None:
     readme = (root / "README.md").read_text(encoding="utf-8")
     readme_en = (root / "README_EN.md").read_text(encoding="utf-8")
 
+    canonical_docs = {
+        "SKILL.md": skill,
+        "README.md": readme,
+        "README_EN.md": readme_en,
+        "references/workflow-discovery.md": discovery,
+        "references/site-readme.md": site_readme,
+    }
+    for rel, text in canonical_docs.items():
+        if OLD_ACTION_TEMPLATES_REL in text:
+            fail(f"{rel} 不应继续引用旧 action templates 路径，应改为 {ACTION_TEMPLATES_REL}")
+
     if "### 5b. Workflow Discovery" not in skill:
         fail("SKILL.md 缺少 Workflow Discovery 执行契约章节")
     if "references/workflow-discovery.md" not in skill:
         fail("SKILL.md 参考文档列表缺少 references/workflow-discovery.md")
+    required_skill_runner_tokens = (
+        "references/action-templates.md",
+        "浏览器 action 脚本",
+        "runner",
+    )
+    missing_skill_runner_tokens = [token for token in required_skill_runner_tokens if token not in skill]
+    if missing_skill_runner_tokens:
+        fail("SKILL.md 缺少 action script runner 入口提示：" + ", ".join(missing_skill_runner_tokens))
     if "临时执行脚本统一写入 `.dp/tmp/_run.py`" in skill:
         fail("SKILL.md 仍包含旧的 _run.py 通用临时脚本硬规则")
     if "task 语义" in skill or "task 字段" in skill:
@@ -471,20 +498,90 @@ def validate_workflow_discovery_contract(root: Path) -> None:
         fail("SKILL.md Workflow Discovery 章节缺少关键项：" + ", ".join(missing_skill_tokens))
 
     if re.search(r"(?m)^##\s+Workflow\s+\d+", workflows) or re.search(r"\[Workflow\s+\d+", workflows):
-        fail("references/workflows.md 不应再把 action templates 命名为 Workflow 1..10，应改为 Template 1..10")
+        fail("references/action-templates.md 不应再把 action templates 命名为 Workflow 1..10，应改为 Template 1..10")
     if "task 语义" in workflows or "task 字段" in workflows:
-        fail("references/workflows.md 不应再把 task 作为独立语义轴，应使用 workflow_summary / workflow 匹配")
+        fail("references/action-templates.md 不应再把 task 作为独立语义轴，应使用 workflow_summary / workflow 匹配")
     if "site + intent + workflow_summary 精确匹配" in skill or "site + intent + workflow_summary 精确匹配" in workflows:
         fail("workflow_summary 是摘要，不应作为精确复用键")
     workflows_lower = workflows.lower()
     if "action templates" not in workflows_lower or "execution primitives" not in workflows_lower:
-        fail("references/workflows.md 应明确定位为 Action templates / execution primitives")
+        fail("references/action-templates.md 应明确定位为 Action templates / execution primitives")
     if "references/workflow-discovery.md" not in workflows:
-        fail("references/workflows.md 应指向独立的 workflow discovery 参考文档")
+        fail("references/action-templates.md 应指向独立的 workflow discovery 参考文档")
+
+    required_readme_runner_tokens = (
+        "临时脚本 runner",
+        ".dp/tmp/",
+        ".dp/.venv/Scripts/python.exe",
+        ".dp/.venv/bin/python",
+    )
+    missing_readme_runner_tokens = [token for token in required_readme_runner_tokens if token not in readme]
+    if missing_readme_runner_tokens:
+        fail("README.md 缺少临时脚本 runner 说明：" + ", ".join(missing_readme_runner_tokens))
+
+    required_readme_en_runner_tokens = (
+        "Temporary script runner",
+        ".dp/tmp/",
+        ".dp/.venv/Scripts/python.exe",
+        ".dp/.venv/bin/python",
+    )
+    missing_readme_en_runner_tokens = [
+        token for token in required_readme_en_runner_tokens if token not in readme_en
+    ]
+    if missing_readme_en_runner_tokens:
+        fail("README_EN.md missing temporary script runner guidance: " + ", ".join(missing_readme_en_runner_tokens))
+
+    runner_sec = _extract_same_level_heading_section(workflows, "## 临时脚本 runner")
+    required_runner_tokens = (
+        ".dp/tmp/<semantic-name>.py",
+        ".dp/.venv/Scripts/python.exe",
+        ".dp/.venv/bin/python",
+        "PowerShell",
+        "Bash heredoc",
+        "系统 `python`",
+    )
+    missing_runner_tokens = [token for token in required_runner_tokens if token not in runner_sec]
+    if missing_runner_tokens:
+        fail("references/action-templates.md 临时脚本 runner 章节缺少关键项：" + ", ".join(missing_runner_tokens))
+
+    scrape_sec = _extract_same_level_heading_section(workflows, "## Template 2：数据抓取（scrape）")
+    required_scrape_tokens = (
+        "结构化数据先落盘",
+        "media 后处理",
+        "media-manifest.json",
+        "limit",
+        "timeout",
+    )
+    missing_scrape_tokens = [token for token in required_scrape_tokens if token not in scrape_sec]
+    if missing_scrape_tokens:
+        fail("references/action-templates.md Template 2 缺少 media 抓取顺序约束：" + ", ".join(missing_scrape_tokens))
+
+    form_sec = _extract_same_level_heading_section(workflows, "## Template 4：表单填写（form）")
+    required_form_tokens = (
+        "readback",
+        "range-readback.json",
+        "assertion",
+        "提交/导出前",
+    )
+    missing_form_tokens = [token for token in required_form_tokens if token not in form_sec]
+    if missing_form_tokens:
+        fail("references/action-templates.md Template 4 缺少提交前 readback / assertion 契约：" + ", ".join(missing_form_tokens))
+
+    download_sec = _extract_same_level_heading_section(workflows, "## Template 6：文件下载（download）")
+    required_download_tokens = (
+        "二级菜单",
+        "弹窗",
+        "range modal",
+        "后台任务",
+        "导出探测",
+    )
+    missing_download_tokens = [token for token in required_download_tokens if token not in download_sec]
+    if missing_download_tokens:
+        fail("references/action-templates.md Template 6 缺少复杂导出先探测边界：" + ", ".join(missing_download_tokens))
 
     reuse_sec = _extract_same_level_heading_section(workflows, "## 三级复用判断边界示例")
     if "workflow discovery" not in reuse_sec.lower() and "Workflow Discovery" not in reuse_sec:
-        fail("references/workflows.md 低置信度复用边界应指向 workflow discovery")
+        fail("references/action-templates.md 低置信度复用边界应指向 workflow discovery")
 
     required_discovery_tokens = (
         "触发矩阵",
@@ -500,6 +597,20 @@ def validate_workflow_discovery_contract(root: Path) -> None:
     missing_discovery_tokens = [token for token in required_discovery_tokens if token not in discovery]
     if missing_discovery_tokens:
         fail("references/workflow-discovery.md 缺少关键章节或 token：" + ", ".join(missing_discovery_tokens))
+
+    export_sec = _extract_same_level_heading_section(discovery, "## 导出探测")
+    required_export_tokens = (
+        "二级菜单",
+        "range modal",
+        "readback",
+        "no-submit",
+        "export-probe.json",
+        "range-readback.json",
+        "不提交",
+    )
+    missing_export_tokens = [token for token in required_export_tokens if token not in export_sec]
+    if missing_export_tokens:
+        fail("references/workflow-discovery.md 导出探测缺少 menu/modal/range/readback/no-submit 细节：" + ", ".join(missing_export_tokens))
 
     if "workflow-draft.md" not in site_readme:
         fail("references/site-readme.md 缺少 workflow-draft.md discovery 产物边界")

@@ -742,6 +742,48 @@ def test_install_root_skip() -> None:
         check("root_skip: assets/output/keep.txt 已安装", (dst / "assets" / "output" / "keep.txt").exists(), "")
 
 
+def test_install_root_docs_skip_and_prune() -> None:
+    """install: 只跳过 docs/superpowers/ 本地草稿，保留 docs/ 下的正式文档。"""
+    with tempfile.TemporaryDirectory() as src_d, tempfile.TemporaryDirectory() as dst_d:
+        src = Path(src_d)
+        dst = Path(dst_d) / "out"
+        dst.mkdir()
+        orig = _install_mod.SKILL_DIR
+        _install_mod.SKILL_DIR = src
+        try:
+            (src / "SKILL.md").write_text("v1", encoding="utf-8")
+            (src / "docs").mkdir()
+            (src / "docs" / "guide.md").write_text("public docs", encoding="utf-8")
+            (src / "docs" / "superpowers" / "specs").mkdir(parents=True)
+            (src / "docs" / "superpowers" / "specs" / "draft.md").write_text("draft", encoding="utf-8")
+            _install_mod.install(dst)
+            check("root_skip: docs/guide.md 已安装", (dst / "docs" / "guide.md").exists(), "")
+            check("root_skip: docs/superpowers/ 未被安装", not (dst / "docs" / "superpowers").exists(), "")
+            manifest = json.loads((dst / _install_mod.MANIFEST_FILE).read_text(encoding="utf-8"))
+            check(
+                "root_skip: manifest 包含 docs/guide.md",
+                "docs/guide.md" in manifest.get("files", []),
+                json.dumps(manifest, ensure_ascii=False),
+            )
+            check(
+                "root_skip: manifest 不含 docs/superpowers",
+                not any(str(path).startswith("docs/superpowers/") for path in manifest.get("files", [])),
+                json.dumps(manifest, ensure_ascii=False),
+            )
+
+            # 模拟旧版安装已经把 docs/superpowers 记录进 manifest，下一次安装应 prune 掉。
+            stale = dst / "docs" / "superpowers" / "plans" / "old.md"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("old", encoding="utf-8")
+            _install_mod._write_manifest(dst, ["SKILL.md", "docs/superpowers/plans/old.md"])
+            _install_mod.install(dst)
+            check("root_skip: manifest prune 删除旧 docs/superpowers 文件", not stale.exists(), "")
+            check("root_skip: manifest prune 清理空 docs/superpowers 目录", not (dst / "docs" / "superpowers").exists(), "")
+            check("root_skip: manifest prune 保留 docs/guide.md", (dst / "docs" / "guide.md").exists(), "")
+        finally:
+            _install_mod.SKILL_DIR = orig
+
+
 def _patch_doctor(tmp: Path):
     """返回 context manager，临时将 doctor 模块的工作区全局变量指向 tmp/.dp。"""
     import contextlib
@@ -2090,7 +2132,7 @@ def test_validate_old_output_contract_rejected() -> None:
         (root / "evals" / "smoke-checklist.md").write_text("# checklist\n", encoding="utf-8")
         (root / "SKILL.md").write_text("# skill\n", encoding="utf-8")
         (root / "references").mkdir()
-        (root / "references" / "workflows.md").write_text("# workflows\n", encoding="utf-8")
+        (root / _vb.ACTION_TEMPLATES_REL).write_text("# action templates\n", encoding="utf-8")
         _expect_fail("validate: 旧输出路径（真实日期）应失败",
                      lambda: _vb.validate_output_contract(root))
 
@@ -2107,7 +2149,7 @@ def test_validate_placeholder_output_contract_rejected() -> None:
         (root / "evals" / "smoke-checklist.md").write_text("# checklist\n", encoding="utf-8")
         (root / "SKILL.md").write_text("# skill\n", encoding="utf-8")
         (root / "references").mkdir()
-        (root / "references" / "workflows.md").write_text("# workflows\n", encoding="utf-8")
+        (root / _vb.ACTION_TEMPLATES_REL).write_text("# action templates\n", encoding="utf-8")
         _expect_fail("validate: 旧输出路径（占位符 YYYY-MM-DD）应失败",
                      lambda: _vb.validate_output_contract(root))
 
@@ -2124,6 +2166,24 @@ def test_validate_agents_text_rejected() -> None:
                      lambda: _vb.validate_forbidden_text(root))
 
 
+def test_validate_forbidden_text_skips_local_superpowers_docs() -> None:
+    """docs/superpowers 是本地 spec/plan 草稿目录，不参与 source bundle 文本扫描。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        draft = root / "docs" / "superpowers" / "plans" / "draft.md"
+        draft.parent.mkdir(parents=True)
+        draft.write_text(".agents" + "/skills/dp\n", encoding="utf-8")
+        try:
+            _vb.validate_forbidden_text(root)
+            check("validate: docs/superpowers 本地草稿不参与 forbidden text 扫描", True)
+        except SystemExit:
+            check(
+                "validate: docs/superpowers 本地草稿不参与 forbidden text 扫描",
+                False,
+                "不应触发 SystemExit",
+            )
+
+
 def test_validate_missing_site_run_dir() -> None:
     """output.py 缺少 site_run_dir 函数时 validate_cross_file_consistency 应失败。"""
     with tempfile.TemporaryDirectory() as d:
@@ -2131,7 +2191,7 @@ def test_validate_missing_site_run_dir() -> None:
         (root / "templates").mkdir()
         (root / "templates" / "output.py").write_text("def old_func(): pass\n", encoding="utf-8")
         (root / "references").mkdir()
-        (root / "references" / "workflows.md").write_text(
+        (root / _vb.ACTION_TEMPLATES_REL).write_text(
             "site_run_dir\nmark_script_status\nintent:\nurl:\ntags:\nlast_run:\nstatus:\n",
             encoding="utf-8",
         )
@@ -2147,7 +2207,7 @@ def test_validate_missing_upload_helper() -> None:
         (root / "templates" / "output.py").write_text("def site_run_dir(): pass\n", encoding="utf-8")
         (root / "templates" / "utils.py").write_text("def other(): pass\n", encoding="utf-8")
         (root / "references").mkdir()
-        (root / "references" / "workflows.md").write_text(
+        (root / _vb.ACTION_TEMPLATES_REL).write_text(
             "site_run_dir\nmark_script_status\nintent:\nurl:\ntags:\nlast_run:\nstatus:\n",
             encoding="utf-8",
         )
@@ -2176,6 +2236,17 @@ def test_validate_missing_provider_contract_reference_required() -> None:
         _create_required_bundle_tree(root, omit={"references/provider-contract.md"})
         _expect_fail(
             "validate: 缺少 provider-contract.md 应失败",
+            lambda: _vb.validate_required_files(root),
+        )
+
+
+def test_validate_missing_action_templates_reference_required() -> None:
+    """references/action-templates.md 缺失时 validate_required_files 应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _create_required_bundle_tree(root, omit={"references/action-templates.md"})
+        _expect_fail(
+            "validate: 缺少 action-templates.md 应失败",
             lambda: _vb.validate_required_files(root),
         )
 
@@ -2209,12 +2280,12 @@ def test_validate_removed_connect_wrappers_not_referenced_in_docs() -> None:
         _create_required_bundle_tree(root)
         for rel in (
             "SKILL.md",
-            "references/workflows.md",
+            _vb.ACTION_TEMPLATES_REL,
             "references/mode-selection.md",
             "evals/smoke-checklist.md",
         ):
             (root / rel).write_text("# doc\n", encoding="utf-8")
-        (root / "references" / "workflows.md").write_text("connect_web_page()\n", encoding="utf-8")
+        (root / _vb.ACTION_TEMPLATES_REL).write_text("connect_web_page()\n", encoding="utf-8")
         _expect_fail(
             "validate: canonical docs 不应再引用 removed connect wrappers",
             lambda: _vb.validate_removed_connect_wrappers(root),
@@ -2238,7 +2309,7 @@ def test_validate_workflow_file_helper_contracts_require_upload_remote_fail_fast
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         _create_required_bundle_tree(root)
-        (root / "references" / "workflows.md").write_text(
+        (root / _vb.ACTION_TEMPLATES_REL).write_text(
             _build_workflows_md(
                 upload_contract=(
                     "- 对直接 `input[type=file]`，优先 `upload_file(..., launch_info=launch_info)`；"
@@ -2263,7 +2334,7 @@ def test_validate_workflow_file_helper_contracts_require_download_remote_fail_fa
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         _create_required_bundle_tree(root)
-        (root / "references" / "workflows.md").write_text(
+        (root / _vb.ACTION_TEMPLATES_REL).write_text(
             _build_workflows_md(
                 upload_contract=(
                     "- 对直接 `input[type=file]`，优先 `upload_file(..., launch_info=launch_info)`；"
@@ -2288,7 +2359,7 @@ def test_validate_workflow_file_helper_contracts_allow_remote_fail_fast_boundary
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         _create_required_bundle_tree(root)
-        (root / "references" / "workflows.md").write_text(
+        (root / _vb.ACTION_TEMPLATES_REL).write_text(
             _build_workflows_md(
                 upload_contract=(
                     "- 对直接 `input[type=file]`，优先 `upload_file(..., launch_info=launch_info)`；"
@@ -2353,6 +2424,7 @@ def main() -> int:
     test_install_file_to_dir()
     test_install_dir_to_file()
     test_install_root_skip()
+    test_install_root_docs_skip_and_prune()
 
     print("\n── doctor.check() ──")
     test_doctor_check_state_missing()
@@ -2419,9 +2491,11 @@ def main() -> int:
     test_validate_old_output_contract_rejected()
     test_validate_placeholder_output_contract_rejected()
     test_validate_agents_text_rejected()
+    test_validate_forbidden_text_skips_local_superpowers_docs()
     test_validate_missing_site_run_dir()
     test_validate_missing_upload_helper()
     test_validate_missing_provider_contract_reference_required()
+    test_validate_missing_action_templates_reference_required()
     test_validate_missing_cdp_port_template_required()
     test_validate_missing_download_correlation_template_required()
     test_validate_removed_connect_wrappers_not_referenced_in_docs()
@@ -2487,6 +2561,13 @@ def main() -> int:
     test_validate_workflow_discovery_contract_rejects_summary_exact_key()
     test_validate_workflow_discovery_contract_rejects_site_root_draft_default()
     test_validate_workflow_discovery_contract_rejects_incomplete_behavior_evals()
+    test_validate_workflow_discovery_contract_rejects_missing_runner_contracts()
+    test_validate_workflow_discovery_contract_rejects_old_workflows_reference_path()
+    test_validate_workflow_discovery_contract_rejects_missing_readme_en_runner_contract()
+    test_validate_workflow_discovery_contract_rejects_missing_form_readback_contracts()
+    test_validate_workflow_discovery_contract_rejects_missing_download_probe_boundary()
+    test_validate_workflow_discovery_contract_rejects_missing_media_ordering_contract()
+    test_validate_workflow_discovery_contract_rejects_missing_export_probe_details()
     test_validate_workflow_discovery_contract_allows_closure_fixture()
     test_validate_smoke_checklist_requires_non_string_repair_boundary()
     test_validate_smoke_checklist_requires_selected_provider_snake_case_boundary()
@@ -3597,6 +3678,76 @@ def test_validate_rule_markers_allows_preflight_prose_with_repair_boundary() -> 
             check("validate_rule_markers: 新 preflight prose 可通过", False, "不应触发 SystemExit")
 
 
+def _workflow_contract_fixture(
+    *,
+    runner: bool = True,
+    scrape_media: bool = True,
+    form_readback: bool = True,
+    download_probe: bool = True,
+) -> str:
+    parts = [
+        "# Action Templates / Execution Primitives\n\n"
+        "references/workflow-discovery.md\n\n"
+        "## Template 1：截图（screenshot）\n\n"
+    ]
+    if runner:
+        parts.append(
+            "## 临时脚本 runner\n\n"
+            "- 多轮探索脚本使用 `.dp/tmp/<semantic-name>.py`。\n"
+            "- Windows runner 使用 `.dp/.venv/Scripts/python.exe`，macOS / Linux 使用 `.dp/.venv/bin/python`。\n"
+            "- PowerShell 里按普通命令执行临时脚本，复杂内容写文件后运行。\n"
+            "- 禁用 Bash heredoc；不要回退到系统 `python`。\n\n"
+        )
+    parts.append("## Template 2：数据抓取（scrape）\n\n")
+    if scrape_media:
+        parts.append(
+            "**media contract**：结构化数据先落盘到 `data.json`；media 后处理按字段 URL 下载，"
+            "写 `media-manifest.json`，并为大页面设置 `limit` 与 `timeout`。\n\n"
+        )
+    parts.append("## Template 4：表单填写（form）\n\n")
+    if form_readback:
+        parts.append(
+            "**readback contract**：提交/导出前保存 `range-readback.json`；"
+            "对关键字段做 readback 和 assertion。\n\n"
+        )
+    parts.append("## Template 6：文件下载（download）\n\n")
+    if download_probe:
+        parts.append(
+            "若触发链路涉及二级菜单、弹窗、range modal 或后台任务，先进入导出探测，"
+            "不要直接套单目标 `download_file()`。\n\n"
+        )
+    parts.append(
+        "## 三级复用判断边界示例\n\n"
+        "低置信度时进入 Workflow Discovery。\n"
+        "workflow_summary 是 workflow 的人类可读摘要，不是稳定 ID。\n"
+    )
+    return "".join(parts)
+
+
+def _discovery_reference_fixture(*, export_probe: bool = True) -> str:
+    export_section = "## 导出探测\n\n"
+    if export_probe:
+        export_section += (
+            "先用 no-submit 探测二级菜单、弹窗和 range modal；"
+            "提交前保存 `range-readback.json` 做 readback，不提交真实导出。\n"
+            "触发链路、候选选择器和后台任务状态写入 `export-probe.json`。\n"
+        )
+    return (
+        "# Workflow Discovery\n\n"
+        "## 触发矩阵\n\n"
+        "## 产物契约\n\n"
+        ".dp/projects/<site>/output/workflow-discovery-<intent>/<timestamp>/\n"
+        "workflow-drafts/<intent>.md\n"
+        "## 只读 DOM 探测\n\n"
+        "## 交互探测\n\n"
+        f"{export_section}"
+        "## 选择器优先级\n\n"
+        "## 诊断表\n\n"
+        "## 沉淀检查清单\n\n"
+        "site_run_dir\n"
+    )
+
+
 def _write_discovery_contract_fixture(root: Path, *, overrides: dict[str, str] | None = None) -> None:
     """创建 validate_workflow_discovery_contract 所需的最小文件集合。"""
     overrides = overrides or {}
@@ -3608,30 +3759,11 @@ def _write_discovery_contract_fixture(root: Path, *, overrides: dict[str, str] |
             "建立、修复或判断可复用站点 workflow 需要证据时，临时脚本写入 .dp/tmp/。\n"
             "把候选选择器、状态验证和 evidence 写到 "
             ".dp/projects/<site>/output/workflow-discovery-<intent>/YYYY-MM-DD_HHMMSS_mmm/。\n"
+            f"浏览器 action 脚本的 runner 写法见 {_vb.ACTION_TEMPLATES_REL}。\n"
             "\n## 参考文档\n\n- references/workflow-discovery.md\n"
         ),
-        "references/workflows.md": (
-            "# Action Templates / Execution Primitives\n\n"
-            "references/workflow-discovery.md\n\n"
-            "## Template 1：截图（screenshot）\n\n"
-            "## 三级复用判断边界示例\n\n"
-            "低置信度时进入 Workflow Discovery。\n"
-            "workflow_summary 是 workflow 的人类可读摘要，不是稳定 ID。\n"
-        ),
-        "references/workflow-discovery.md": (
-            "# Workflow Discovery\n\n"
-            "## 触发矩阵\n\n"
-            "## 产物契约\n\n"
-            ".dp/projects/<site>/output/workflow-discovery-<intent>/<timestamp>/\n"
-            "workflow-drafts/<intent>.md\n"
-            "## 只读 DOM 探测\n\n"
-            "## 交互探测\n\n"
-            "## 导出探测\n\n"
-            "## 选择器优先级\n\n"
-            "## 诊断表\n\n"
-            "## 沉淀检查清单\n\n"
-            "site_run_dir\n"
-        ),
+        _vb.ACTION_TEMPLATES_REL: _workflow_contract_fixture(),
+        "references/workflow-discovery.md": _discovery_reference_fixture(),
         "references/site-readme.md": (
             "# 站点 README 规则\n\n"
             "README 维护边界\n"
@@ -3639,8 +3771,19 @@ def _write_discovery_contract_fixture(root: Path, *, overrides: dict[str, str] |
             "discovery run-dir 的 workflow-draft.md\n"
             "workflow-drafts/<intent>.md\n"
         ),
-        "README.md": "# dp\n\n站点 workflow 复用\n",
-        "README_EN.md": "# dp\n\nReuse and Discovery First\n\n| Capability | Examples |\n",
+        "README.md": (
+            "# dp\n\n"
+            "临时脚本 runner：脚本放 `.dp/tmp/`，Windows 用 `.dp/.venv/Scripts/python.exe`，"
+            "macOS / Linux 用 `.dp/.venv/bin/python`。\n"
+            "站点 workflow 复用\n"
+        ),
+        "README_EN.md": (
+            "# dp\n\n"
+            "Reuse and Discovery First\n\n"
+            "Temporary script runner: keep scripts in `.dp/tmp/`; use `.dp/.venv/Scripts/python.exe` "
+            "on Windows and `.dp/.venv/bin/python` on macOS / Linux.\n\n"
+            "| Capability | Examples |\n"
+        ),
         "evals/evals.json": json.dumps({"skill_name": "dp", "evals": []}, ensure_ascii=False),
         "evals/agent-behavior-evals.json": json.dumps({
             "skill_name": "dp",
@@ -3670,7 +3813,7 @@ def test_validate_workflow_discovery_contract_rejects_workflow_numbered_template
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         _write_discovery_contract_fixture(root, overrides={
-            "references/workflows.md": (
+            _vb.ACTION_TEMPLATES_REL: (
                 "# Action Templates / Execution Primitives\n\n"
                 "references/workflow-discovery.md\n\n"
                 "## Workflow 1：截图（screenshot）\n\n"
@@ -3692,6 +3835,7 @@ def test_validate_workflow_discovery_contract_rejects_summary_exact_key() -> Non
                 "### 5b. Workflow Discovery\n\n"
                 "可复用站点 workflow .dp/tmp/ workflow-discovery-<intent> 候选选择器 状态验证\n"
                 "site + intent + workflow_summary 精确匹配\n"
+                f"浏览器 action 脚本的 runner 写法见 {_vb.ACTION_TEMPLATES_REL}。\n"
                 "references/workflow-discovery.md\n"
             )
         })
@@ -3706,14 +3850,10 @@ def test_validate_workflow_discovery_contract_rejects_site_root_draft_default() 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         _write_discovery_contract_fixture(root, overrides={
-            "references/workflow-discovery.md": (
-                "# Workflow Discovery\n\n"
-                "## 触发矩阵\n\n## 产物契约\n\n"
-                ".dp/projects/<site>/workflow-draft.md\n"
-                "workflow-drafts/<intent>.md\n"
-                "## 只读 DOM 探测\n\n## 交互探测\n\n## 导出探测\n\n"
-                "## 选择器优先级\n\n## 诊断表\n\n## 沉淀检查清单\n\nsite_run_dir\n"
-            )
+            "references/workflow-discovery.md": _discovery_reference_fixture().replace(
+                ".dp/projects/<site>/output/workflow-discovery-<intent>/<timestamp>/",
+                ".dp/projects/<site>/workflow-draft.md",
+            ),
         })
         _expect_fail(
             "validate_workflow_discovery_contract: 站点根 workflow-draft 应失败",
@@ -3736,6 +3876,105 @@ def test_validate_workflow_discovery_contract_rejects_incomplete_behavior_evals(
         })
         _expect_fail(
             "validate_workflow_discovery_contract: behavior eval 缺场景应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_rejects_missing_runner_contracts() -> None:
+    """Action templates 缺临时脚本 runner 契约时，应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root, overrides={
+            _vb.ACTION_TEMPLATES_REL: _workflow_contract_fixture(runner=False),
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: 缺 runner 契约应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_rejects_old_workflows_reference_path() -> None:
+    """SKILL.md 不应继续把旧 action template 路径作为入口。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        old_rel = _vb.OLD_ACTION_TEMPLATES_REL
+        _write_discovery_contract_fixture(root, overrides={
+            "SKILL.md": (
+                "### 5b. Workflow Discovery\n\n"
+                "建立、修复或判断可复用站点 workflow 需要证据时，临时脚本写入 .dp/tmp/。\n"
+                "把候选选择器、状态验证和 evidence 写到 "
+                ".dp/projects/<site>/output/workflow-discovery-<intent>/YYYY-MM-DD_HHMMSS_mmm/。\n"
+                f"浏览器 action 脚本的 runner 写法见 {old_rel}。\n"
+                "\n## 参考文档\n\n- references/workflow-discovery.md\n"
+            )
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: 旧 action template 入口引用应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_rejects_missing_readme_en_runner_contract() -> None:
+    """英文 README 缺临时脚本 runner 入口时，应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root, overrides={
+            "README_EN.md": "# dp\n\nReuse and Discovery First\n\n| Capability | Examples |\n",
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: 英文 README 缺 runner 入口应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_rejects_missing_form_readback_contracts() -> None:
+    """表单模板缺提交前 readback / assertion 边界时，应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root, overrides={
+            _vb.ACTION_TEMPLATES_REL: _workflow_contract_fixture(form_readback=False),
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: 缺 form readback 契约应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_rejects_missing_download_probe_boundary() -> None:
+    """下载模板缺复杂导出先探测边界时，应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root, overrides={
+            _vb.ACTION_TEMPLATES_REL: _workflow_contract_fixture(download_probe=False),
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: 缺 download probe 边界应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_rejects_missing_media_ordering_contract() -> None:
+    """抓取模板缺先结构化数据、后 media manifest 的顺序约束时，应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root, overrides={
+            _vb.ACTION_TEMPLATES_REL: _workflow_contract_fixture(scrape_media=False),
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: 缺 media ordering 契约应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_rejects_missing_export_probe_details() -> None:
+    """Workflow Discovery 缺 menu/modal/range/readback/no-submit 导出探测细节时，应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root, overrides={
+            "references/workflow-discovery.md": _discovery_reference_fixture(export_probe=False),
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: 缺 export probe 细节应失败",
             lambda: _vb.validate_workflow_discovery_contract(root),
         )
 

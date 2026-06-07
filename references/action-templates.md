@@ -14,6 +14,7 @@ Action templates / execution primitives 是页面动作模板；站点 workflow 
 
 ## 目录
 
+- [临时脚本 runner](#临时脚本-runner)
 - [默认交互约束](#默认交互约束)
 - [浏览器/WebPage 脚本头](#浏览器webpage-脚本头)
 - [Provider 启动（按需）](#provider-启动按需)
@@ -42,6 +43,33 @@ Action templates / execution primitives 是页面动作模板；站点 workflow 
 - 同一次 workflow run 的所有输出必须落到同一个 run-dir
 - 脚本只消费 `.dp/lib` helper，不复制 helper 实现
 - 浏览器类任务的 provider-first 连接逻辑保持一致；不要在业务脚本里手写 provider 私有 API
+
+---
+
+## 临时脚本 runner
+
+临时脚本 runner 的目标是让 `.dp/tmp/` 中的 action script 可以在当前工作区重复运行，
+同时避免把探索脚本散落到项目源码或用户主目录。简单一次性任务可以覆盖 `.dp/tmp/_run.py`；
+多轮 discovery、调试或需要保留上下文的任务使用 `.dp/tmp/<semantic-name>.py`，例如
+`.dp/tmp/_workflow_discovery_<site>_<intent>.py`。
+
+执行临时脚本时优先使用工作区虚拟环境，不要回退到系统 `python`：
+Windows Python 路径按 contract 记为 `.dp/.venv/Scripts/python.exe`，在 PowerShell 命令中可写成
+`.\.dp\.venv\Scripts\python.exe`。
+
+```powershell
+# Windows / PowerShell
+.\.dp\.venv\Scripts\python.exe .\.dp\tmp\<semantic-name>.py
+```
+
+```bash
+# macOS / Linux
+.dp/.venv/bin/python .dp/tmp/<semantic-name>.py
+```
+
+PowerShell 中如果要生成较复杂的临时脚本，先把脚本写成文件再执行；不要用 Bash heredoc
+伪装成跨 shell 写法。临时脚本内部仍使用本文的脚本头加载 `.dp/lib`，沉淀为站点脚本时再移入
+`.dp/projects/<site>/scripts/` 并更新文件头。
 
 ---
 
@@ -184,6 +212,11 @@ except Exception:
 抓取任务要先判断是否已有同站点同意图脚本。选择器和字段含义一旦稳定，
 优先沉淀脚本，避免后续任务重复探索页面结构。
 
+大页面抓取默认先保留可验证的数据面，而不是一开始就批量下载所有图片、视频或附件。
+结构化数据先落盘到 `data.json`；media 后处理只针对已确认字段中的 URL 进行，并写
+`media-manifest.json` 记录来源字段、目标文件、状态和错误。对媒体下载必须设置 `limit`
+和 `timeout`，避免一个页面把 action script 拖成不受控的批处理器。
+
 ```python
 # ── 接浏览器/WebPage 脚本头 ──
 
@@ -220,6 +253,14 @@ page.eles("xpath://div[@class='item']")  # XPath
 page.eles("text^=关键字")           # 文本前缀匹配
 page.eles("@data-id")              # 含某属性的元素
 ```
+
+**media contract**：
+- 先完成 DOM / API 字段抓取并保存结构化数据；结构化数据先落盘后，再决定是否做 media 后处理
+- media 只从已记录字段中读取 URL，不重新遍历页面做第二套抓取逻辑
+- media 下载产物仍属于当前 run-dir 的证据；`media-manifest.json` 记录每个 URL 的来源字段、
+  目标文件名、HTTP/下载状态和失败原因
+- 大页面必须设置 `limit` 和 `timeout`；默认不要无上限下载页面所有图片或附件
+- 不规定项目最终输出目录、包结构或报告结构；站点 workflow 可以按自身逻辑组织后续产物
 
 ---
 
@@ -306,6 +347,15 @@ try:
         ele = page.ele(selector)
         native_input(ele, value)
 
+    readback = {}
+    for selector, expected in FIELDS:
+        ele = page.ele(selector)
+        actual = ele.attr("value") or ele.text
+        readback[selector] = {"expected": expected, "actual": actual}
+        if str(actual).strip() != str(expected).strip():
+            raise RuntimeError(f"字段 readback 不一致：{selector}")
+    save_json(readback, run / "range-readback.json")
+
     native_click(page.ele(SUBMIT_SEL))
     page.wait.doc_loaded()
     print(f"[dp] 表单已提交 → {page.title} ({page.url})")
@@ -328,6 +378,12 @@ page.ele("#agree").click()  # 或 .check()
 # 文件上传
 upload_file(page.ele("input[type=file]"), "/path/to/file.txt", launch_info=launch_info)
 ```
+
+**readback contract**：
+- 提交/导出前必须对关键字段做 readback，保存 `range-readback.json` 或等价证据
+- 对日期范围、金额范围、筛选条件、收件人、权限、开关类字段做 assertion；不一致时停止，不提交
+- 对高风险动作仍需用户确认；readback 不能替代支付、发帖、删除、不可逆修改等确认流程
+- 对不暴露 `value` 的控件，记录可见文本、选中态、aria 状态或截图证据，但仍要有明确断言点
 
 ---
 
@@ -375,6 +431,9 @@ except Exception:
 
 下载任务默认是单目标下载。一个 `download_file()` 调用只对应一个目标文件；
 同一次任务可以有多个步骤，但应共享同一个 run-dir，并用语义文件名区分产物。
+如果导出入口不是“一个明确按钮触发一个文件”，而是需要展开二级菜单、填写弹窗、
+确认 range modal、等待后台任务或选择多文件，先进入 `references/workflow-discovery.md`
+的导出探测，不要直接把这些流程塞进 `download_file()`。
 
 ```python
 # ── 接浏览器/WebPage 脚本头 ──
@@ -415,6 +474,8 @@ except Exception:
   - 对 `data:` 直链下载可优先本地直存，减少对浏览器下载事件的依赖
   - `download_file(..., by_js=True)` 仅影响点击触发方式，不改变下载主路径
   - 若任务依赖新标签页，应先完成标签页切换，再触发下载
+- 遇到二级菜单、弹窗、range modal、后台任务、多文件选择或异步生成任务时，先做导出探测；
+  探测确认触发链路和状态判断后，再由外层 workflow 编排一个或多个单目标下载步骤
 
 ---
 
