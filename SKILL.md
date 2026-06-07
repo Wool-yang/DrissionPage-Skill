@@ -1,19 +1,19 @@
 ---
 name: dp
 description: >
-  当用户需要用浏览器完成网页截图、页面快照、数据抓取、内容提取、自动登录、填写表单、点击按钮，或任何依赖 DOM、真实登录态、页面渲染结果的网页交互任务时使用。即使用户没有明确提到 DrissionPage，也应主动触发此 skill。
+  当用户需要用浏览器完成网页截图、页面快照、数据抓取、内容提取、自动登录、填写表单、点击按钮、上传下载、新标签页，或需要创建、修复、判断、复用某个站点 workflow 且依赖 DOM、真实登录态、页面渲染结果或当前浏览器会话状态时使用。即使用户没有明确提到 DrissionPage，也应主动触发此 skill。
 compatibility: >
   需要宿主客户端能够读取此 skill、运行本地 Python 与 shell 命令、读取 bundled scripts/references，并在目标工作区写文件。默认假设 Python 3.10+、可写文件系统、以及可连接本地 Chromium 调试地址的环境。若客户端要接入自定义 browser provider，应在工作区提供 `.dp/providers/<name>.py` 实现，并能访问它依赖的本地 API 或 launcher；若最终使用 fallback `cdp-port`，则必须显式提供测试端口。
 metadata:
-  bundle-version: "2026-04-27.3"
+  bundle-version: "2026-06-07.2"
   runtime-lib-version: "2026-04-27.1"
 ---
 
-# 浏览器自动化
+# 浏览器自动化与站点 Workflow
 
-`dp` 是一个面向 Skill 客户端的浏览器自动化能力包。它基于 DrissionPage，
-通过工作区 browser provider 获取可接管的 Chromium 调试地址，再完成截图、抓取、登录、
-表单、上传、下载、新标签页等任务。
+`dp` 是一个面向 Skill 客户端的浏览器自动化与站点 workflow 沉淀能力包。它基于 DrissionPage，
+通过工作区 browser provider 获取可接管的 Chromium 调试地址，再执行页面动作、探索未知流程、
+复用或修复已沉淀脚本，并把稳定站点 workflow 保存为可重复运行的项目资产。
 
 这个文件是 Agent 执行 contract。它保留必须遵守的流程、边界和判断规则；
 具体代码模板和接口细节按需查阅 `references/`，不要在任务中重写 bundled helper。
@@ -26,6 +26,7 @@ metadata:
 - 用户明确要求“用浏览器做这件事”
 - 任务必须依赖页面 DOM、真实登录态、浏览器渲染结果或当前浏览器会话状态
 - 用户已经在浏览器中登录，希望复用 cookies、页面状态或当前 profile 继续工作
+- 用户需要围绕某个站点创建、修复、判断或复用可重复 workflow
 
 若任务只是纯 HTTP 请求，且明确不需要浏览器、DOM、JS 渲染、已登录浏览器 cookies，
 仍可在本 skill 内选择 `SessionPage`；否则默认按浏览器任务处理。
@@ -107,10 +108,12 @@ doctor 只检测和修复工作区环境：venv、lib、runtime-managed provider
 从用户请求、当前页面和已有脚本上下文提取：
 
 - `site-name`：小写连字符格式，例如 `hacker-news`
-- 意图：base 集合为 `screenshot` / `scrape` / `login` / `form` / `upload` /
+- action intent：base 集合为 `screenshot` / `scrape` / `login` / `form` / `upload` /
   `download` / `newtab` / `web-page-sync` / `session-page` / `custom`
 - 意图可用 `<base>-<qualifier>` 自然扩展，例如 `scrape-orders`、`login-sso`
 - `scripts/list-scripts.py --intent` 按子串过滤，不是精确匹配
+- site workflow：除 `site-name` 与 intent 外，还要识别入口页面、前置状态、关键步骤、
+  状态验证、输出契约和是否已有可复用脚本
 
 对象选择按 `references/mode-selection.md`：
 
@@ -188,7 +191,7 @@ Provider contract 细节见 `references/provider-contract.md`。
 
 完整交互链路和 workflow 模板见 `references/workflows.md`。
 
-### 5. 复用优先
+### 5. 复用 / 修复 / Discovery 优先
 
 先找已有脚本，只有找不到合适脚本时才生成新脚本。这样可以保留站点知识、登录流程、
 稳定选择器和历史修复。
@@ -197,22 +200,53 @@ Provider contract 细节见 `references/provider-contract.md`。
 2. 若客户端运行时 `cwd` 不在目标项目树内，应显式传入项目根路径：
    `scripts/list-scripts.py --root <project-root>`
 3. 读取 index 后，按以下优先级判断是否复用：
-   - **site + intent** 精确匹配：强信号，直接复用
-   - **url** 前缀匹配：同站点同路径，读取脚本后判断是否复用或微调
-   - **task** 语义判断：最后兜底，低置信度时不要盲目套用
+   - **site + intent + status: ok + 入口 / 输出契约兼容**：强信号，直接复用
+   - **url / 入口状态 / 输出契约** 部分匹配：读取脚本后判断是否复用、微调或修复
+   - **workflow_summary** 只作为人类可读摘要和低置信语义线索；仅摘要文本相近时，先读旧脚本验证，必要时进入 Workflow Discovery
 4. `status: broken` 的脚本优先修复再复用，而不是绕过旧问题新建脚本
 
 边界示例：
 
 | 场景 | 判断 | 推荐操作 |
 |---|---|---|
-| site=hn，intent=scrape，已有 `scrape-top.py`，新任务同样是抓 HN 榜单 | site+intent 精确匹配 | 直接复用，无需询问 |
+| site=hn，intent=scrape，已有 `scrape-top.py`，脚本 `status: ok`，入口和输出契约兼容 | 高置信匹配 | 直接复用，无需询问 |
 | site=hn，intent=scrape，已有 `scrape-top.py`，新任务是抓评论区 | url 前缀不同 | url 不匹配，生成新脚本 |
-| site=hn，已有多个脚本，新任务描述与 task 字段语义相近但不精确 | task 语义低置信度 | 优先生成临时脚本，或先读旧脚本再改 |
+| site=hn，已有多个脚本，新 workflow summary 文本相近但入口和输出契约不精确 | workflow 匹配低置信度 | 先读旧脚本验证；页面结构或复用路径仍不清楚时做 Workflow Discovery |
+
+### 5b. Workflow Discovery
+
+只有同时满足以下条件时，才先执行 Workflow Discovery：
+
+- 当前目标是建立、修复或判断一条可复用站点 workflow，而不是只完成一次轻量页面动作
+- `list-scripts.py`、站点 README、旧脚本或历史输出无法提供高置信复用路径
+- 页面结构、入口状态、关键选择器、交互状态变化或输出契约至少有一项无法确认
+
+已有 `status: ok` 脚本且入口和输出契约匹配、简单截图/导航、一次性可见页面动作、
+已知 endpoint 的纯 `SessionPage` 请求，不应强制进入 discovery。
+
+Discovery 的目标是快速形成站点 workflow 模型，聚焦后续自动化可复用性：
+
+- 记录入口 URL、当前登录/权限/页面状态、关键页面区域和可操作控件
+- 收集候选选择器、字段含义、表格/列表/分页/弹窗/iframe 等结构线索
+- 用小步交互做状态验证，确认关键状态变化，保留 before/after 截图或 `state.json`
+- 明确输出契约，例如 `data.json` 字段、下载文件名、截图名称或后续脚本参数
+- 把探索证据写入同一次 run-dir；必要的临时探测脚本写入 `.dp/tmp/`
+
+Discovery evidence 的默认真源是：
+
+```text
+.dp/projects/<site>/output/workflow-discovery-<intent>/YYYY-MM-DD_HHMMSS_mmm/
+```
+
+其中至少保存入口状态、页面结构摘要和 `workflow-draft.md`。只有流程可重复执行、输出路径稳定、
+且沉淀脚本能回写 `status: ok` 时，才保存到 `.dp/projects/<site>/scripts/` 并进入站点 README 托管区。
+详细探测模式见 `references/workflow-discovery.md`。
 
 ### 6. 生成并执行
 
-- 临时执行脚本统一写入 `.dp/tmp/_run.py`
+- 临时脚本写入 `.dp/tmp/`，简单一次性任务可以覆盖 `.dp/tmp/_run.py`
+- 多轮 discovery、调试或需要保留上下文的临时脚本使用语义化文件名，
+  例如 `.dp/tmp/_workflow_discovery_<site>_<intent>.py`
 - 执行时优先走工作区虚拟环境
 - 生成脚本时统一复用 `.dp/lib` 中的辅助模块
 - 不要在业务脚本中复制通用 helper
@@ -221,7 +255,7 @@ Provider contract 细节见 `references/provider-contract.md`。
 
 ### 7. 归档与沉淀
 
-输出必须用 `site_run_dir(site, script_name)` 获取本次执行目录，路径格式为：
+每次 workflow run 只能有一个 run-dir，路径格式为：
 
 ```text
 .dp/projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS_mmm/
@@ -230,6 +264,9 @@ Provider contract 细节见 `references/provider-contract.md`。
 一个目录对应一次执行，目录内文件使用语义名称，例如 `data.json`、`screenshot.png`、
 `before.png`、`detail.json`。
 
+- 独立脚本默认用 `site_run_dir(site, script_name)` 获取本次执行目录
+- 外层编排 workflow 可以把已创建的 `run_dir` 传入子步骤；子步骤必须复用这个目录，
+  不要再调用 `site_run_dir()` 创建新目录
 - 临时测试输出保存到 `.dp/tmp/_out/`
 - 只在以下情况向用户追问：账号密码、高风险动作（支付 / 发帖 / 删除）、
   或确实无法推断的多义任务
@@ -239,6 +276,7 @@ Provider contract 细节见 `references/provider-contract.md`。
 - 满足沉淀条件时，将脚本写入 `.dp/projects/<site>/scripts/<name>.py`
 - 沉淀脚本应在末尾用 `mark_script_status("ok")` 回写运行状态，
   并在 `except` 中回写 `"broken"`
+- 向用户宣称 workflow 已沉淀前，必须至少成功运行一次并回写 `status: ok`
 
 失败处理与跨脚本协作由 Agent 根据执行上下文语义判断，包括调试、重试、降级模式，
 以及多脚本任务中的数据传递。这是设计选择：保留判断空间，但所有输出路径、
@@ -251,6 +289,8 @@ provider、helper 和 README 边界仍必须遵守本 contract。
 
 - `## Scripts` 托管区必须使用 `<!-- dp:scripts:start/end -->` 标记
 - 临时脚本和一次性探索脚本不写入 README
+- Discovery 证据默认写入 discovery run-dir；除非用户明确要求维护 README，
+  或当前任务就是 README 维护，否则不自动改写托管区之外的人工章节
 - 若托管标记损坏或缺失，只输出 warning，不重写整份文件
 - 骨架格式和完整规范见 `references/site-readme.md`
 
@@ -277,7 +317,8 @@ provider、helper 和 README 边界仍必须遵守本 contract。
 按需读取，不要在每个任务里一次性展开所有参考文档：
 
 - 对象选择：`references/mode-selection.md`
-- Workflow 模板：`references/workflows.md`
+- Workflow Discovery：`references/workflow-discovery.md`
+- Action templates / execution primitives：`references/workflows.md`
 - Provider Contract：`references/provider-contract.md`
 - DrissionPage 接口速查：`references/interface.md`
 - 站点 README 规则：`references/site-readme.md`

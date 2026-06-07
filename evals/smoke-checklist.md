@@ -65,9 +65,21 @@ provider-first 连接、输出归档和关键 workflow 都没有偏离设计。
 - 输出归档到 `.dp/projects/<site>/output/<script-name>/YYYY-MM-DD_HHMMSS_mmm/`
 - 每个目录对应一次执行
 - 目录内文件使用语义名称，如 `data.json`、`screenshot.png`
-- 临时脚本落到 `.dp/tmp/_run.py`
+- 临时脚本落到 `.dp/tmp/`；简单一次性任务可覆盖 `_run.py`，多轮 discovery 使用语义化文件名
 - 已沉淀脚本写入 `.dp/projects/<site>/scripts/`
 - 站点 README 只更新托管区
+
+## 6b. Workflow Discovery 检查
+
+- 未知站点 workflow、低置信度脚本复用、broken 脚本原因不明、多模块页面或导出链路不清时，先执行 Workflow Discovery
+- Discovery 是站点 workflow 建模层，位于截图、抓取、登录等 action template 之上
+- Discovery 先做只读 DOM 探测，记录 URL、title、关键区域、候选选择器、表单、按钮、iframe
+- 关键交互用小步验证，保存 before/after 截图或 `state.json`
+- Discovery 证据和 `workflow-draft.md` 默认写入 `.dp/projects/<site>/output/workflow-discovery-<intent>/<timestamp>/`
+- 多轮探测脚本使用 `.dp/tmp/_workflow_discovery_<site>_<intent>.py` 这类语义化临时文件名
+- Discovery 期间不更新 README 的 `## Scripts` 托管区
+- 沉淀正式脚本前，必须明确入口、前置状态、状态验证、输出契约和单 run-dir 规则
+- 宣称 workflow 已沉淀前，脚本至少成功运行一次并回写 `status: ok`
 
 ## 7. 上传场景检查
 

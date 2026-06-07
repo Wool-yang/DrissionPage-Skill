@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 # 从脚本 docstring 中提取的字段列表（按顺序）
-_FIELDS = ("task", "intent", "url", "tags", "status", "last_run")
+_FIELDS = ("workflow_summary", "intent", "url", "tags", "status", "last_run")
 
 
 def find_projects_dir(start: Path) -> Path | None:
@@ -101,7 +101,7 @@ def main() -> None:
                 "site": site,
                 "file": f.name,
                 "path": str(f.resolve()),
-                "task": fields.get("task", ""),
+                "workflow_summary": fields.get("workflow_summary", ""),
                 "intent": fields.get("intent", ""),
                 "url": fields.get("url", ""),
                 "tags": fields.get("tags", ""),

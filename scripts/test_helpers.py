@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import io
+import json
 import os
 import sys
 import tempfile
@@ -214,7 +215,7 @@ TODAY = date.today().isoformat()
 _EMPTY = '''\
 """
 site: test
-task: demo
+workflow_summary: demo
 last_run:
 status:
 """
@@ -225,7 +226,7 @@ pass
 _STALE = '''\
 """
 site: test
-task: demo
+workflow_summary: demo
 last_run: 2020-01-01
 status: broken
 """
@@ -236,7 +237,7 @@ pass
 _BODY_HAS_FIELDS = '''\
 """
 site: test
-task: demo
+workflow_summary: demo
 last_run:
 status:
 """
@@ -280,7 +281,7 @@ def test_empty_fields() -> None:
     result = _rewrite_header_fields(_EMPTY, "ok", TODAY)
     check("空 last_run 被填入", f"last_run: {TODAY}" in result, repr(result))
     check("空 status 被填入", "status: ok" in result, repr(result))
-    check("相邻字段 task 未被破坏", "task: demo" in result, repr(result))
+    check("相邻字段 workflow_summary 未被破坏", "workflow_summary: demo" in result, repr(result))
 
 
 def test_stale_fields() -> None:
@@ -337,7 +338,7 @@ def test_mark_script_status_integration() -> None:
 _BODY_POLLUTES = '''\
 """
 site: test-site
-task: 抓取订单
+workflow_summary: 抓取订单
 intent: scrape
 url: https://example.com/orders
 status:
@@ -358,7 +359,7 @@ last_run: 2020-01-01
 _URL_WITH_HASH = '''\
 """
 site: test-site
-task: 登录
+workflow_summary: 登录
 intent: login
 url: https://example.com/#/signin
 status:
@@ -371,7 +372,7 @@ _SHEBANG_DOUBLE = '''\
 #!/usr/bin/env python3
 """
 site: shebang-site
-task: 截图
+workflow_summary: 截图
 intent: screenshot
 url: https://example.com/
 status: ok
@@ -383,7 +384,7 @@ pass
 _SINGLE_QUOTE_EXTRACT = """\
 '''
 site: single-quote-site
-task: 表单
+workflow_summary: 表单
 intent: form
 url: https://example.com/form
 status: broken
@@ -395,12 +396,12 @@ pass
 _MULTILINE_BODY = '''\
 """
 site: test-site
-task: 数据抓取
+workflow_summary: 数据抓取
 intent: scrape
 status: ok
 """
 TEMPLATE = """
-task: 这不是元数据
+workflow_summary: 这不是元数据
 status: in-template
 """
 '''
@@ -411,7 +412,7 @@ def test_extract_only_docstring() -> None:
     p = _tmp(_BODY_POLLUTES)
     try:
         fields = extract_fields(p)
-        check("extract: task 正确提取", fields.get("task") == "抓取订单", repr(fields))
+        check("extract: workflow_summary 正确提取", fields.get("workflow_summary") == "抓取订单", repr(fields))
         check("extract: intent 正确提取", fields.get("intent") == "scrape", repr(fields))
         check("extract: url 正确提取", fields.get("url") == "https://example.com/orders", repr(fields))
         # 正文里的 status: / last_run: 不应被提取（头部字段为空应返回空）
@@ -436,7 +437,7 @@ def test_extract_shebang() -> None:
     p = _tmp(_SHEBANG_DOUBLE)
     try:
         fields = extract_fields(p)
-        check("extract: shebang 脚本 task 提取正确", fields.get("task") == "截图", repr(fields))
+        check("extract: shebang 脚本 workflow_summary 提取正确", fields.get("workflow_summary") == "截图", repr(fields))
         check("extract: shebang 脚本 intent 提取正确", fields.get("intent") == "screenshot", repr(fields))
     finally:
         p.unlink(missing_ok=True)
@@ -447,7 +448,7 @@ def test_extract_single_quote_docstring() -> None:
     p = _tmp(_SINGLE_QUOTE_EXTRACT)
     try:
         fields = extract_fields(p)
-        check("extract: 单引号 task 提取正确", fields.get("task") == "表单", repr(fields))
+        check("extract: 单引号 workflow_summary 提取正确", fields.get("workflow_summary") == "表单", repr(fields))
         check("extract: 单引号 status 提取正确", fields.get("status") == "broken", repr(fields))
     finally:
         p.unlink(missing_ok=True)
@@ -458,7 +459,7 @@ def test_extract_multiline_body_not_polluted() -> None:
     p = _tmp(_MULTILINE_BODY)
     try:
         fields = extract_fields(p)
-        check("extract: 多行正文 task 不被覆盖", fields.get("task") == "数据抓取", repr(fields))
+        check("extract: 多行正文 workflow_summary 不被覆盖", fields.get("workflow_summary") == "数据抓取", repr(fields))
         check("extract: 多行正文 status 不被覆盖", fields.get("status") == "ok", repr(fields))
     finally:
         p.unlink(missing_ok=True)
@@ -479,7 +480,7 @@ def _make_site_scripts(tmp: Path, scripts: list[dict]) -> Path:
         content = f'''\
 """
 site: {site}
-task: {s.get("task", "demo")}
+workflow_summary: {s.get("workflow_summary", "demo")}
 intent: {s.get("intent", "scrape")}
 url: {s.get("url", "")}
 status: {s.get("status", "")}
@@ -554,7 +555,7 @@ def test_list_scripts_json_normal() -> None:
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         _make_site_scripts(tmp, [
-            {"name": "login.py", "site": "example", "task": "登录",
+            {"name": "login.py", "site": "example", "workflow_summary": "登录",
              "intent": "login", "url": "https://example.com/login", "status": "ok"},
         ])
         out = _capture_list_scripts(tmp / ".dp" / "projects", ["--json"])
@@ -562,7 +563,7 @@ def test_list_scripts_json_normal() -> None:
         check("list: --json 返回列表", isinstance(data, list), repr(out))
         check("list: --json 非空", len(data) == 1, repr(out))
         item = data[0]
-        for key in ("site", "file", "path", "task", "intent", "url", "tags", "status", "last_run"):
+        for key in ("site", "file", "path", "workflow_summary", "intent", "url", "tags", "status", "last_run"):
             check(f"list: --json 包含字段 {key}", key in item, repr(item))
         check("list: --json site 正确", item["site"] == "example", repr(item))
         check("list: --json intent 正确", item["intent"] == "login", repr(item))
@@ -1353,14 +1354,13 @@ def test_browser_upload_path_wsl_drive_mount() -> None:
 def test_browser_upload_path_wsl_unc() -> None:
     """WSL 下非 /mnt/<drive>/ 路径应转换为 \\\\wsl$ UNC 路径。"""
     owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-    with tempfile.NamedTemporaryFile() as f:
-        src = Path(f.name).resolve()
-        with _mock.patch.object(_utils_mod, "_is_wsl", return_value=True), _mock.patch.dict(
-            os.environ, {"WSL_DISTRO_NAME": "TestDistro"}, clear=False
-        ):
-            result = browser_upload_path(src, owner)
-        expected = "\\\\wsl$\\TestDistro" + src.as_posix().replace("/", "\\")
-        check("upload path: WSL UNC", result == expected, repr(result))
+    src = "/tmp/dp-upload-fixture.txt"
+    with _mock.patch.dict(
+        os.environ, {"WSL_DISTRO_NAME": "TestDistro"}, clear=False
+    ), _mock.patch.object(_utils_mod, "_path_exists_local", return_value=True):
+        result = browser_upload_path(src, owner)
+    expected = "\\\\wsl$\\TestDistro\\tmp\\dp-upload-fixture.txt"
+    check("upload path: WSL UNC", result == expected, repr(result))
 
 
 def test_browser_upload_path_linux_passthrough() -> None:
@@ -1473,16 +1473,17 @@ def test_get_wsl_distro_name_falls_back_to_wsl_exe() -> None:
 def test_browser_upload_path_wsl_distro_fallback_reaches_unc_output() -> None:
     """wsl.exe 回退得到的 distro 名必须真正进入最终 UNC 输出。"""
     owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-    with tempfile.NamedTemporaryFile() as f, _mock.patch.dict(
+    src = "/tmp/dp-upload-fallback.txt"
+    with _mock.patch.dict(
         os.environ, {"WSL_DISTRO_NAME": ""}, clear=False
     ), _mock.patch.object(
         _utils_mod.subprocess,
         "check_output",
         return_value="TestDistro\n",
         create=True,
-    ):
+    ), _mock.patch.object(_utils_mod, "_path_exists_local", return_value=True):
         result = browser_upload_path(
-            Path(f.name).resolve(),
+            src,
             owner,
             launch_info={"provider_metadata": {"browser_os": "windows"}},
         )
@@ -1496,7 +1497,8 @@ def test_browser_upload_path_wsl_distro_fallback_reaches_unc_output() -> None:
 def test_browser_upload_path_windows_browser_requires_distro_for_posix_path() -> None:
     """Windows 浏览器消费 POSIX 路径时，拿不到 distro 应直接失败。"""
     owner = _FakeOwner("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-    with tempfile.NamedTemporaryFile() as f, _mock.patch.dict(
+    src = "/tmp/dp-upload-missing-distro.txt"
+    with _mock.patch.dict(
         os.environ, {"WSL_DISTRO_NAME": ""}, clear=False
     ), _mock.patch.object(
         _utils_mod.subprocess,
@@ -1506,7 +1508,7 @@ def test_browser_upload_path_windows_browser_requires_distro_for_posix_path() ->
     ):
         try:
             browser_upload_path(
-                Path(f.name).resolve(),
+                src,
                 owner,
                 launch_info={"provider_metadata": {"browser_os": "windows"}},
             )
@@ -1794,7 +1796,8 @@ def test_download_file_same_os_still_uses_raw_cdp_path() -> None:
 
     check("download unified: 不走 DP 下载管理", ele.download_calls == [], repr(ele.download_calls))
     check("download unified: 仍走原生点击", ele.click_calls == [False], repr(ele.click_calls))
-    check("download unified: 设置浏览器下载目录", captured.get("browser_path") == str(Path(d).resolve()), repr(captured))
+    expected_browser_path = str(Path(d).resolve()).replace("\\", "/")
+    check("download unified: 设置浏览器下载目录", captured.get("browser_path") == expected_browser_path, repr(captured))
     check("download unified: 返回最终路径", Path(final_path).name == "report.txt", repr(final_path))
 
 
@@ -2209,11 +2212,11 @@ def test_validate_removed_connect_wrappers_not_referenced_in_docs() -> None:
 
 def _build_workflows_md(upload_contract: str = "", download_contract: str = "") -> str:
     return (
-        "# Workflow 代码模板\n\n"
-        "## Workflow 5：文件上传（upload）\n\n"
+        "# Action Templates / Execution Primitives\n\n"
+        "## Template 5：文件上传（upload）\n\n"
         "**contract**：\n"
         f"{upload_contract}\n\n"
-        "## Workflow 6：文件下载（download）\n\n"
+        "## Template 6：文件下载（download）\n\n"
         "**contract**：\n"
         f"{download_contract}\n"
     )
@@ -2469,6 +2472,11 @@ def main() -> int:
     test_validate_rule_markers_preflight_requires_selected_provider_presence_boundary()
     test_validate_rule_markers_file_helper_requires_remote_fail_fast_boundary()
     test_validate_rule_markers_allows_preflight_prose_with_repair_boundary()
+    test_validate_workflow_discovery_contract_rejects_workflow_numbered_templates()
+    test_validate_workflow_discovery_contract_rejects_summary_exact_key()
+    test_validate_workflow_discovery_contract_rejects_site_root_draft_default()
+    test_validate_workflow_discovery_contract_rejects_incomplete_behavior_evals()
+    test_validate_workflow_discovery_contract_allows_closure_fixture()
     test_validate_smoke_checklist_requires_non_string_repair_boundary()
     test_validate_smoke_checklist_requires_selected_provider_snake_case_boundary()
     test_validate_smoke_checklist_allows_complete_preflight_prose()
@@ -2867,7 +2875,7 @@ def test_smoke_main_requires_explicit_port_for_cdp_port() -> None:
 _DOCSTRING_WITH_TRIPLE_QUOTE_EXAMPLE = '''\
 """
 site: test
-task: demo
+workflow_summary: demo
 last_run:
 status:
 usage: python scripts/demo.py [--port 9222]
@@ -2881,7 +2889,7 @@ pass
 _DOCSTRING_SINGLE_DELIM_WITH_EXAMPLE = """\
 '''
 site: test
-task: demo
+workflow_summary: demo
 last_run:
 status:
 
@@ -3319,7 +3327,7 @@ def _build_skill_md(
         + f"\n### 1. Preflight（工作区检测）\n\n{preflight}\n"
         + f"\n### 3. 端口与连接策略\n\n{port}\n"
         + f"\n### 4. 交互与节奏约束\n\n{interaction}\n"
-        + f"\n### 5. 复用优先\n\n{reuse}\n"
+        + f"\n### 5. 复用 / 修复 / Discovery 优先\n\n{reuse}\n"
         + (f"\n## 其他章节\n\n{other}\n" if other else "")
     )
 
@@ -3576,6 +3584,161 @@ def test_validate_rule_markers_allows_preflight_prose_with_repair_boundary() -> 
             check("validate_rule_markers: 新 preflight prose 可通过", True)
         except SystemExit:
             check("validate_rule_markers: 新 preflight prose 可通过", False, "不应触发 SystemExit")
+
+
+def _write_discovery_contract_fixture(root: Path, *, overrides: dict[str, str] | None = None) -> None:
+    """创建 validate_workflow_discovery_contract 所需的最小文件集合。"""
+    overrides = overrides or {}
+    (root / "references").mkdir(parents=True, exist_ok=True)
+    (root / "evals").mkdir(parents=True, exist_ok=True)
+    files = {
+        "SKILL.md": (
+            "### 5b. Workflow Discovery\n\n"
+            "建立、修复或判断可复用站点 workflow 需要证据时，临时脚本写入 .dp/tmp/。\n"
+            "把候选选择器、状态验证和 evidence 写到 "
+            ".dp/projects/<site>/output/workflow-discovery-<intent>/YYYY-MM-DD_HHMMSS_mmm/。\n"
+            "\n## 参考文档\n\n- references/workflow-discovery.md\n"
+        ),
+        "references/workflows.md": (
+            "# Action Templates / Execution Primitives\n\n"
+            "references/workflow-discovery.md\n\n"
+            "## Template 1：截图（screenshot）\n\n"
+            "## 三级复用判断边界示例\n\n"
+            "低置信度时进入 Workflow Discovery。\n"
+            "workflow_summary 是 workflow 的人类可读摘要，不是稳定 ID。\n"
+        ),
+        "references/workflow-discovery.md": (
+            "# Workflow Discovery\n\n"
+            "## 触发矩阵\n\n"
+            "## 产物契约\n\n"
+            ".dp/projects/<site>/output/workflow-discovery-<intent>/<timestamp>/\n"
+            "workflow-drafts/<intent>.md\n"
+            "## 只读 DOM 探测\n\n"
+            "## 交互探测\n\n"
+            "## 导出探测\n\n"
+            "## 选择器优先级\n\n"
+            "## 诊断表\n\n"
+            "## 沉淀检查清单\n\n"
+            "site_run_dir\n"
+        ),
+        "references/site-readme.md": (
+            "# 站点 README 规则\n\n"
+            "README 维护边界\n"
+            "workflow_summary\n"
+            "discovery run-dir 的 workflow-draft.md\n"
+            "workflow-drafts/<intent>.md\n"
+        ),
+        "README.md": "# dp\n\n站点 workflow 复用\n",
+        "README_EN.md": "# dp\n\nReuse and Discovery First\n\n| Capability | Examples |\n",
+        "evals/evals.json": json.dumps({"skill_name": "dp", "evals": []}, ensure_ascii=False),
+        "evals/agent-behavior-evals.json": json.dumps({
+            "skill_name": "dp",
+            "evals": [
+                {"id": "a", "prompt": "p", "expected_decision": "reuse_saved_workflow",
+                 "required_trace_events": [], "forbidden_trace_events": []},
+                {"id": "b", "prompt": "p", "expected_decision": "one_off_action_template",
+                 "required_trace_events": [], "forbidden_trace_events": []},
+                {"id": "c", "prompt": "p", "expected_decision": "workflow_discovery",
+                 "required_trace_events": [], "forbidden_trace_events": []},
+                {"id": "d", "prompt": "p", "expected_decision": "no_task_compat_read",
+                 "required_trace_events": [], "forbidden_trace_events": []},
+                {"id": "e", "prompt": "p", "expected_decision": "inspect_broken_then_repair_or_discovery",
+                 "required_trace_events": [], "forbidden_trace_events": []},
+            ],
+        }, ensure_ascii=False),
+    }
+    files.update(overrides)
+    for rel, content in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+
+def test_validate_workflow_discovery_contract_rejects_workflow_numbered_templates() -> None:
+    """action templates 若继续命名为 Workflow 1..10，应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root, overrides={
+            "references/workflows.md": (
+                "# Action Templates / Execution Primitives\n\n"
+                "references/workflow-discovery.md\n\n"
+                "## Workflow 1：截图（screenshot）\n\n"
+                "## 三级复用判断边界示例\n\nWorkflow Discovery\n"
+            )
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: Workflow 1..10 应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_rejects_summary_exact_key() -> None:
+    """workflow_summary 不能重新变成精确复用键。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root, overrides={
+            "SKILL.md": (
+                "### 5b. Workflow Discovery\n\n"
+                "可复用站点 workflow .dp/tmp/ workflow-discovery-<intent> 候选选择器 状态验证\n"
+                "site + intent + workflow_summary 精确匹配\n"
+                "references/workflow-discovery.md\n"
+            )
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: workflow_summary 精确键应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_rejects_site_root_draft_default() -> None:
+    """discovery 不应默认写到站点根目录单个 workflow-draft.md。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root, overrides={
+            "references/workflow-discovery.md": (
+                "# Workflow Discovery\n\n"
+                "## 触发矩阵\n\n## 产物契约\n\n"
+                ".dp/projects/<site>/workflow-draft.md\n"
+                "workflow-drafts/<intent>.md\n"
+                "## 只读 DOM 探测\n\n## 交互探测\n\n## 导出探测\n\n"
+                "## 选择器优先级\n\n## 诊断表\n\n## 沉淀检查清单\n\nsite_run_dir\n"
+            )
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: 站点根 workflow-draft 应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_rejects_incomplete_behavior_evals() -> None:
+    """agent behavior eval 缺关键决策场景时，应失败。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root, overrides={
+            "evals/agent-behavior-evals.json": json.dumps({
+                "skill_name": "dp",
+                "evals": [
+                    {"id": "a", "prompt": "p", "expected_decision": "workflow_discovery",
+                     "required_trace_events": [], "forbidden_trace_events": []}
+                ],
+            }, ensure_ascii=False)
+        })
+        _expect_fail(
+            "validate_workflow_discovery_contract: behavior eval 缺场景应失败",
+            lambda: _vb.validate_workflow_discovery_contract(root),
+        )
+
+
+def test_validate_workflow_discovery_contract_allows_closure_fixture() -> None:
+    """收口后的 discovery contract 最小 fixture 应通过。"""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_discovery_contract_fixture(root)
+        try:
+            _vb.validate_workflow_discovery_contract(root)
+            check("validate_workflow_discovery_contract: closure fixture 可通过", True)
+        except SystemExit:
+            check("validate_workflow_discovery_contract: closure fixture 可通过", False, "不应触发 SystemExit")
 
 
 def test_validate_smoke_checklist_requires_non_string_repair_boundary() -> None:

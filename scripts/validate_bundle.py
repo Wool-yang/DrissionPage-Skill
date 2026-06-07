@@ -36,8 +36,10 @@ REQUIRED_FILES = [
     "references/interface.md",
     "references/mode-selection.md",
     "references/provider-contract.md",
+    "references/workflow-discovery.md",
     "references/workflows.md",
     "references/site-readme.md",
+    "evals/agent-behavior-evals.json",
     "evals/evals.json",
     "evals/smoke-checklist.md",
     "evals/fixtures/basic.html",
@@ -231,9 +233,9 @@ def validate_rule_markers(root: Path) -> None:
     port_sec = _extract_section(skill, "### 3. 端口与连接策略")
     if "cdp-port" not in port_sec or "显式" not in port_sec or "port" not in port_sec:
         fail("SKILL.md 端口策略章节缺少 cdp-port 显式端口说明（应在该章节内同时提到 cdp-port、显式 与 port）")
-    reuse_sec = _extract_section(skill, "### 5. 复用优先")
+    reuse_sec = _extract_section(skill, "### 5. 复用 / 修复 / Discovery 优先")
     if "list-scripts.py" not in reuse_sec or "--root" not in reuse_sec or "cwd" not in reuse_sec:
-        fail("SKILL.md 复用优先章节缺少 list-scripts 显式根路径说明（应在该章节内同时提到 list-scripts.py、--root 与 cwd）")
+        fail("SKILL.md 复用 / 修复 / Discovery 章节缺少 list-scripts 显式根路径说明（应在该章节内同时提到 list-scripts.py、--root 与 cwd）")
     preflight_sec = _extract_section(skill, "### 1. Preflight（工作区检测）")
     required_preflight_tokens = (
         "工作区根",
@@ -359,11 +361,14 @@ def validate_cross_file_consistency(root: Path) -> None:
         fail("references/workflows.md 未使用 upload_file()")
     if "download_file" not in workflows:
         fail("references/workflows.md 未使用 download_file()")
-    for field in ("site:", "task:", "created:", "updated:", "intent:", "url:", "tags:", "last_run:", "status:"):
+    for field in ("site:", "workflow_summary:", "created:", "updated:", "intent:", "url:", "tags:", "last_run:", "status:"):
         if field not in workflows:
             fail(f"references/workflows.md 通用脚本头缺少字段: {field}")
     if "mark_script_status" not in workflows:
         fail("references/workflows.md 未使用 mark_script_status()")
+
+    if re.search(r"(?m)^\s*task:", workflows):
+        fail("references/workflows.md 不应再使用 task: 脚本头字段，应改为 workflow_summary:")
 
     # 下载 contract 校验：download_file() 已内置等待，禁止在其后再调下载管理器等待方法。
     # 校验范围：workflow 模板（用户参照物）+ smoke 脚本（bundled 示例）。
@@ -405,7 +410,7 @@ def validate_workflow_file_helper_contracts(root: Path) -> None:
     """canonical workflows 的 upload/download contract 不应弱化 remote fail-fast 边界。"""
     workflows = (root / "references" / "workflows.md").read_text(encoding="utf-8")
 
-    upload_sec = _extract_same_level_heading_section(workflows, "## Workflow 5：文件上传（upload）")
+    upload_sec = _extract_same_level_heading_section(workflows, "## Template 5：文件上传（upload）")
     has_upload_boundary = (
         "upload_file" in upload_sec
         and "launch_info" in upload_sec
@@ -419,7 +424,7 @@ def validate_workflow_file_helper_contracts(root: Path) -> None:
             "（应说明 upload_file(..., launch_info=launch_info) 在 provider 明确不支持本地文件访问时直接报错）"
         )
 
-    download_sec = _extract_same_level_heading_section(workflows, "## Workflow 6：文件下载（download）")
+    download_sec = _extract_same_level_heading_section(workflows, "## Template 6：文件下载（download）")
     has_download_boundary = (
         "download_file" in download_sec
         and "launch_info" in download_sec
@@ -431,6 +436,111 @@ def validate_workflow_file_helper_contracts(root: Path) -> None:
             "references/workflows.md 的 download contract 缺少 remote file helper 的 fail-fast 边界"
             "（应说明 download_file(..., launch_info=launch_info) 在 provider 明确不支持本地文件访问时直接报错）"
         )
+
+
+def validate_workflow_discovery_contract(root: Path) -> None:
+    """检查 workflow discovery 文档分层与关键约束。"""
+    skill = (root / "SKILL.md").read_text(encoding="utf-8")
+    workflows = (root / "references" / "workflows.md").read_text(encoding="utf-8")
+    discovery = (root / "references" / "workflow-discovery.md").read_text(encoding="utf-8")
+    site_readme = (root / "references" / "site-readme.md").read_text(encoding="utf-8")
+    evals = (root / "evals" / "evals.json").read_text(encoding="utf-8")
+    behavior_evals = json.loads((root / "evals" / "agent-behavior-evals.json").read_text(encoding="utf-8"))
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    readme_en = (root / "README_EN.md").read_text(encoding="utf-8")
+
+    if "### 5b. Workflow Discovery" not in skill:
+        fail("SKILL.md 缺少 Workflow Discovery 执行契约章节")
+    if "references/workflow-discovery.md" not in skill:
+        fail("SKILL.md 参考文档列表缺少 references/workflow-discovery.md")
+    if "临时执行脚本统一写入 `.dp/tmp/_run.py`" in skill:
+        fail("SKILL.md 仍包含旧的 _run.py 通用临时脚本硬规则")
+    if "task 语义" in skill or "task 字段" in skill:
+        fail("SKILL.md 不应再把 task 作为独立语义轴，应使用 workflow_summary / workflow 匹配")
+
+    discovery_sec = _extract_section(skill, "### 5b. Workflow Discovery")
+    required_skill_tokens = (
+        "可复用站点 workflow",
+        ".dp/tmp/",
+        "workflow-discovery-<intent>",
+        "候选选择器",
+        "状态验证",
+    )
+    missing_skill_tokens = [token for token in required_skill_tokens if token not in discovery_sec]
+    if missing_skill_tokens:
+        fail("SKILL.md Workflow Discovery 章节缺少关键项：" + ", ".join(missing_skill_tokens))
+
+    if re.search(r"(?m)^##\s+Workflow\s+\d+", workflows) or re.search(r"\[Workflow\s+\d+", workflows):
+        fail("references/workflows.md 不应再把 action templates 命名为 Workflow 1..10，应改为 Template 1..10")
+    if "task 语义" in workflows or "task 字段" in workflows:
+        fail("references/workflows.md 不应再把 task 作为独立语义轴，应使用 workflow_summary / workflow 匹配")
+    if "site + intent + workflow_summary 精确匹配" in skill or "site + intent + workflow_summary 精确匹配" in workflows:
+        fail("workflow_summary 是摘要，不应作为精确复用键")
+    workflows_lower = workflows.lower()
+    if "action templates" not in workflows_lower or "execution primitives" not in workflows_lower:
+        fail("references/workflows.md 应明确定位为 Action templates / execution primitives")
+    if "references/workflow-discovery.md" not in workflows:
+        fail("references/workflows.md 应指向独立的 workflow discovery 参考文档")
+
+    reuse_sec = _extract_same_level_heading_section(workflows, "## 三级复用判断边界示例")
+    if "workflow discovery" not in reuse_sec.lower() and "Workflow Discovery" not in reuse_sec:
+        fail("references/workflows.md 低置信度复用边界应指向 workflow discovery")
+
+    required_discovery_tokens = (
+        "触发矩阵",
+        "产物契约",
+        "只读 DOM 探测",
+        "交互探测",
+        "导出探测",
+        "选择器优先级",
+        "诊断表",
+        "沉淀检查清单",
+        "site_run_dir",
+    )
+    missing_discovery_tokens = [token for token in required_discovery_tokens if token not in discovery]
+    if missing_discovery_tokens:
+        fail("references/workflow-discovery.md 缺少关键章节或 token：" + ", ".join(missing_discovery_tokens))
+
+    if "workflow-draft.md" not in site_readme:
+        fail("references/site-readme.md 缺少 workflow-draft.md discovery 产物边界")
+    if ".dp/projects/<site>/workflow-draft.md" in skill + discovery + site_readme + readme + readme_en:
+        fail("discovery 不应默认写入站点根目录单个 workflow-draft.md，应写入 discovery run-dir")
+    if "workflow-drafts/<intent>.md" not in site_readme or "workflow-drafts/<intent>.md" not in discovery:
+        fail("discovery 文档应说明可选站点级 workflow-drafts/<intent>.md 索引")
+    if "workflow_summary" not in site_readme:
+        fail("references/site-readme.md 应说明 workflow_summary 字段")
+    if "README 维护" not in site_readme and "README maintenance" not in site_readme:
+        fail("references/site-readme.md 缺少 README 人工章节维护边界")
+
+    if "task 语义" in discovery or "task 语义" in evals or "任务语义" in readme:
+        fail("workflow discovery 相关文档不应再使用 task 语义，应改为 workflow_summary")
+    if "Reuse First" in readme_en or "| Task | Examples |" in readme_en or "archived by task" in readme_en:
+        fail("README_EN.md 仍包含旧 Reuse First / Task 模型")
+
+    if behavior_evals.get("skill_name") != "dp":
+        fail("evals/agent-behavior-evals.json 的 skill_name 必须为 dp")
+    scenarios = behavior_evals.get("evals")
+    if not isinstance(scenarios, list) or len(scenarios) < 5:
+        fail("evals/agent-behavior-evals.json 至少需要 5 个行为场景")
+    required_decisions = {
+        "reuse_saved_workflow",
+        "one_off_action_template",
+        "workflow_discovery",
+        "no_task_compat_read",
+        "inspect_broken_then_repair_or_discovery",
+    }
+    decisions = {item.get("expected_decision") for item in scenarios if isinstance(item, dict)}
+    missing_decisions = sorted(required_decisions - decisions)
+    if missing_decisions:
+        fail("evals/agent-behavior-evals.json 缺少行为决策：" + ", ".join(missing_decisions))
+    for item in scenarios:
+        if not isinstance(item, dict):
+            fail("evals/agent-behavior-evals.json eval 项必须是对象")
+        for key in ("id", "prompt", "expected_decision", "required_trace_events", "forbidden_trace_events"):
+            if key not in item:
+                fail(f"evals/agent-behavior-evals.json 场景缺少字段：{key}")
+        if not isinstance(item["required_trace_events"], list) or not isinstance(item["forbidden_trace_events"], list):
+            fail("agent behavior eval 的 trace events 必须是数组")
 
 
 def validate_smoke_checklist_contracts(root: Path) -> None:
@@ -492,6 +602,7 @@ def main() -> None:
     validate_cross_file_consistency(root)
     validate_removed_connect_wrappers(root)
     validate_workflow_file_helper_contracts(root)
+    validate_workflow_discovery_contract(root)
     validate_smoke_checklist_contracts(root)
     run_unit_tests(root)
     cleanup_bytecode(root)  # 清除测试运行可能产生的字节码

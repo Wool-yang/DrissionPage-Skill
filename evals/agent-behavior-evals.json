@@ -1,0 +1,78 @@
+{
+  "skill_name": "dp",
+  "schema_version": 1,
+  "description": "Scenario-level behavior contracts for future agent trace evaluation. Static bundle validation only checks that this contract exists and is well formed.",
+  "evals": [
+    {
+      "id": "reuse-high-confidence-status-ok",
+      "prompt": "同站点已有 status: ok 的 scrape-orders workflow，入口页面和输出字段都和这次一致，直接帮我跑一次。",
+      "expected_decision": "reuse_saved_workflow",
+      "required_trace_events": [
+        "run_list_scripts",
+        "read_existing_script",
+        "execute_saved_script"
+      ],
+      "forbidden_trace_events": [
+        "run_workflow_discovery",
+        "write_saved_script_before_discovery"
+      ]
+    },
+    {
+      "id": "one-off-screenshot-no-discovery",
+      "prompt": "打开这个页面并截一张当前页面全图，不需要保存成长期流程。",
+      "expected_decision": "one_off_action_template",
+      "required_trace_events": [
+        "write_tmp_script",
+        "write_run_artifact"
+      ],
+      "forbidden_trace_events": [
+        "run_workflow_discovery",
+        "write_site_workflow_draft"
+      ]
+    },
+    {
+      "id": "similar-summary-low-confidence",
+      "prompt": "已有几个同站点脚本，但这次只是看起来相似，不确定入口和输出能不能接上，请先判断。",
+      "expected_decision": "workflow_discovery",
+      "required_trace_events": [
+        "run_list_scripts",
+        "read_existing_script",
+        "read_reference_workflow_discovery",
+        "write_tmp_discovery_script",
+        "write_discovery_run_artifact:workflow-draft.md"
+      ],
+      "forbidden_trace_events": [
+        "reuse_by_workflow_summary_only",
+        "write_saved_script_before_discovery",
+        "update_readme_manual_section"
+      ]
+    },
+    {
+      "id": "legacy-task-field-no-compat",
+      "prompt": "这个项目里旧脚本头还是 task 字段，帮我列出可复用 workflow。",
+      "expected_decision": "no_task_compat_read",
+      "required_trace_events": [
+        "run_list_scripts",
+        "report_empty_or_missing_workflow_summary"
+      ],
+      "forbidden_trace_events": [
+        "read_legacy_task_as_workflow_summary"
+      ]
+    },
+    {
+      "id": "broken-script-repair-or-discovery",
+      "prompt": "上次保存的脚本 status 是 broken，帮我修，但先弄清楚是入口变了、选择器变了还是页面状态不对。",
+      "expected_decision": "inspect_broken_then_repair_or_discovery",
+      "required_trace_events": [
+        "run_list_scripts",
+        "read_existing_script",
+        "inspect_broken_status",
+        "write_discovery_run_artifact:workflow-draft.md"
+      ],
+      "forbidden_trace_events": [
+        "bypass_broken_script_with_new_saved_script",
+        "mark_status_ok_without_successful_run"
+      ]
+    }
+  ]
+}

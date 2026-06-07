@@ -16,3 +16,6 @@ venv/
 
 # dp 工作区运行时产物
 .dp/
+
+# 本地 superpowers 设计/计划草稿不进入 source bundle
+docs/superpowers/

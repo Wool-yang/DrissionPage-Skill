@@ -109,6 +109,66 @@
       "must_not_create": [],
       "json_keys": [],
       "run_dir_pattern": "projects/<site>/output/session-page/<timestamp>/"
+    },
+    {
+      "id": 12,
+      "prompt": "这个站点第一次接入，我想以后反复抓这个报表页。先帮我看清楚页面结构和可复用路径，不要一上来就保存正式脚本。",
+      "expected_output": "触发 dp，识别为未知站点 workflow，先执行 Workflow Discovery；使用 provider-first 接管浏览器，输出 dom-summary.json、entry.png 和 workflow-draft.md，临时探测脚本写入 .dp/tmp/ 的语义化文件名，不进入 README Scripts 托管区。",
+      "artifacts": ["dom-summary.json", "entry.png", "workflow-draft.md"],
+      "must_not_create": ["projects/<site>/scripts/<name>.py"],
+      "json_keys": ["url", "title", "buttons"],
+      "run_dir_pattern": "projects/<site>/output/workflow-discovery-<intent>/<timestamp>/",
+      "files": [".dp/tmp/_workflow_discovery_<site>_<intent>.py"]
+    },
+    {
+      "id": 13,
+      "prompt": "已有几个同站点脚本，但这次需求只是看起来相似，不确定能不能复用。请先判断页面结构和旧脚本能不能接上。",
+      "expected_output": "触发 dp，先用 list-scripts.py 枚举已有脚本；当只有 workflow_summary 文本相近但 workflow 入口、前置状态或输出契约低置信度匹配时，不盲复用也不直接另写正式脚本，而是执行 Workflow Discovery，对比旧脚本入口、候选选择器、状态验证和输出契约。",
+      "artifacts": ["workflow-draft.md", "dom-summary.json"],
+      "must_not_create": [],
+      "json_keys": ["url", "title"],
+      "run_dir_pattern": "projects/<site>/output/workflow-discovery-<intent>/<timestamp>/",
+      "files": []
+    },
+    {
+      "id": 14,
+      "prompt": "上次保存的脚本现在 status 是 broken，帮我修一下，但先弄清楚它到底是入口变了、选择器变了还是页面状态不对。",
+      "expected_output": "触发 dp，优先读取并修复 status: broken 的旧脚本；失败原因不清时先执行 Workflow Discovery，记录旧选择器与当前 DOM 差异、before/after 状态和修复建议。只有修复脚本成功运行并回写 status: ok 后，才宣称 workflow 已恢复。",
+      "artifacts": ["workflow-draft.md", "state-before.json", "state-after.json"],
+      "must_not_create": [],
+      "json_keys": ["title", "url"],
+      "run_dir_pattern": "projects/<site>/output/workflow-discovery-<intent>/<timestamp>/",
+      "files": []
+    },
+    {
+      "id": 15,
+      "prompt": "这个页面有多个模块、筛选器、弹窗和 iframe，我需要后面能稳定抽取其中一个模块的数据。",
+      "expected_output": "触发 dp，执行 Workflow Discovery；先做只读 DOM 探测，列出模块、表单、按钮、iframe 和候选选择器，再用小步交互验证状态变化，形成 workflow-draft.md。后续满足可重复执行、输出稳定和 status: ok 条件后再沉淀正式脚本。",
+      "artifacts": ["dom-summary.json", "workflow-draft.md", "entry.png"],
+      "must_not_create": [],
+      "json_keys": ["iframes", "buttons", "forms"],
+      "run_dir_pattern": "projects/<site>/output/workflow-discovery-<intent>/<timestamp>/",
+      "files": []
+    },
+    {
+      "id": 16,
+      "prompt": "我不确定这个导出按钮是直接下载、弹窗、新标签页还是后台生成任务。先帮我探一下导出链路。",
+      "expected_output": "触发 dp，执行 Workflow Discovery 的导出探测；记录触发元素候选选择器、是否打开新标签页或弹窗、是否后台任务、文件名能否预测和完成状态判断。单个明确下载才用 download_file()，多步骤导出由外层 workflow 共享一个 run_dir 编排。",
+      "artifacts": ["workflow-draft.md", "state-before.json", "state-after.json"],
+      "must_not_create": [],
+      "json_keys": ["url", "title"],
+      "run_dir_pattern": "projects/<site>/output/workflow-discovery-export/<timestamp>/",
+      "files": []
+    },
+    {
+      "id": 17,
+      "prompt": "刚才 discovery 已经确认流程稳定了，现在把它沉淀成可复用 workflow，并更新站点 README 的脚本索引。",
+      "expected_output": "触发 dp，基于 workflow-draft.md 生成 .dp/projects/<site>/scripts/<name>.py；脚本复用 bundled helper、单 run-dir 输出、成功运行一次并 mark_script_status(\"ok\") 后，才更新 README 的 dp:scripts 托管区，不改写人工章节。",
+      "artifacts": ["data.json", "workflow-draft.md"],
+      "must_not_create": [],
+      "json_keys": [],
+      "run_dir_pattern": "projects/<site>/output/<script-name>/<timestamp>/",
+      "files": ["projects/<site>/scripts/<name>.py", "projects/<site>/README.md"]
     }
   ]
 }

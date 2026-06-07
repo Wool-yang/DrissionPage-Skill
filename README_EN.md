@@ -2,10 +2,11 @@
 
 **[中文](README.md)**
 
-`dp` is a browser automation Skill for Skill-capable clients. It is built on
+`dp` is a browser automation and site workflow Skill for Skill-capable clients. It is built on
 [DrissionPage](https://github.com/g1879/DrissionPage), acquires a connectable Chromium
 debug address through a browser provider, and attaches to that browser for screenshots,
-scraping, login, form filling, file upload/download, new-tab workflows, and related web tasks.
+scraping, login, form filling, file upload/download, new-tab handling, and reusable site
+workflow discovery.
 
 This repository publishes the universal source bundle. `SKILL.md` is the agent-facing execution
 contract, `templates/` contains runtime helpers, and `references/` contains templates and API notes
@@ -28,11 +29,18 @@ The `dp` core provides the provider contract and loader only. It does not embed 
 AdsPower, fingerprint browsers, or specific launchers. Custom providers live in the target
 workspace as `.dp/providers/<name>.py` and are maintained by the client or user.
 
-### Reuse First
+### Workflow-first
+
+A workflow is a repeatable path for a site and intent: entry state, prerequisites, ordered steps,
+state checks, output contract, and reusable script. Screenshots, scraping, login, forms, upload,
+download, and new-tab handling are execution primitives that can compose a workflow.
+
+### Reuse and Discovery First
 
 Site scripts are saved under `.dp/projects/<site>/scripts/`. Later tasks for the same site, intent,
-or URL family should reuse or repair existing scripts first, preserving login flows, stable
-selectors, historical fixes, and site-specific knowledge.
+entry state, URL family, or output contract should reuse or repair existing scripts first,
+preserving login flows, stable selectors, historical fixes, and site-specific knowledge. When no
+high-confidence reusable workflow exists, use workflow discovery before saving a new script.
 
 ### Native Interaction First
 
@@ -44,8 +52,20 @@ are last-resort fallbacks.
 
 ## Capabilities
 
-| Task | Examples |
-|------|----------|
+Core capabilities:
+
+| Capability | Examples |
+|------------|----------|
+| Site workflow reuse | Find saved scripts by `site + intent`, entry state, URL, and output contract; reuse or repair first |
+| Workflow discovery | Explore page structure, selector candidates, state checks, and output contracts for low-confidence reusable workflows |
+| Provider-first attach | Acquire a Chromium debug address through the workspace provider and reuse real profiles or sessions |
+| Run archive | Store each execution in one run-dir with semantic output files |
+| Action templates | Use templates for screenshot, scrape, login, form, upload, download, new tab, WebPage, and SessionPage primitives |
+
+Common execution primitives:
+
+| Primitive | Examples |
+|-----------|----------|
 | Screenshot | Full-page, element, and region screenshots |
 | Scrape | List extraction, detail extraction, paginated scraping |
 | Login | Username/password login, reuse an already logged-in browser |
@@ -145,9 +165,29 @@ When an agent uses `dp`, it typically:
 2. Resolves the default provider and acquires a debug address through it
 3. Chooses `ChromiumPage`, `WebPage`, or `SessionPage`
 4. Searches for saved scripts and reuses or repairs them first
-5. Generates and runs a temporary script only when needed
+5. Runs workflow discovery when reusable workflow matching is low-confidence
 6. Saves output under `.dp/projects/<site>/output/<script-name>/<timestamp>/`
 7. Saves reusable workflows and maintains the managed section of the site README
+
+---
+
+## Workflow Discovery
+
+Workflow discovery is the exploration pass used when the user needs a reusable site workflow and
+existing scripts, README notes, or history do not provide a high-confidence path. It is above the
+action templates: it decides how screenshots, scraping, login, forms, downloads, and other actions
+compose into a stable workflow.
+
+Temporary probe scripts live in `.dp/tmp/`. Discovery evidence, including `workflow-draft.md`, lives
+in the run-dir for that discovery pass:
+
+```text
+.dp/projects/<site>/output/workflow-discovery-<intent>/<timestamp>/
+```
+
+Only after the path is repeatable, the output contract is stable, and the saved script can mark
+`status: ok` should the workflow enter `.dp/projects/<site>/scripts/` and the managed site README
+section.
 
 ---
 
@@ -177,13 +217,15 @@ When an agent uses `dp`, it typically:
 ├── lib/                        # Runtime library copy managed by doctor
 ├── providers/                  # Workspace provider implementations
 ├── tmp/
-│   ├── _run.py                 # Temporary script for the current execution
+│   ├── _run.py                 # Overwritable one-off temporary script
+│   ├── _workflow_discovery_<site>_<intent>.py
+│   │                           # Semantic temporary script for multi-step discovery
 │   └── _out/                   # Temporary output
 ├── projects/
 │   └── <site-name>/
 │       ├── README.md           # Site index; Scripts section is agent-managed
 │       ├── scripts/            # Saved reusable scripts
-│       └── output/             # Execution outputs archived by task and timestamp
+│       └── output/             # Execution outputs archived by script/workflow and timestamp
 ├── config.json                 # Workspace config, including default_provider
 └── state.json                  # Bundle/runtime version state
 ```

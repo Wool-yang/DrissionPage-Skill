@@ -2,10 +2,10 @@
 
 **[English](README_EN.md)**
 
-`dp` 是一个面向 Skill 客户端的浏览器自动化能力包。它基于
+`dp` 是一个面向 Skill 客户端的浏览器自动化与站点 workflow 沉淀能力包。它基于
 [DrissionPage](https://github.com/g1879/DrissionPage)，通过 browser provider
-获取并接管可连接的 Chromium 调试地址，用于完成截图、抓取、登录、表单填写、
-文件上传下载、新标签页处理等网页任务。
+获取并接管可连接的 Chromium 调试地址，用于执行截图、抓取、登录、表单填写、
+文件上传下载、新标签页处理等页面动作，也用于在未知站点上探索、验证并沉淀可复用 workflow。
 
 这个仓库发布的是通用 source bundle：`SKILL.md` 给 Agent 提供执行 contract，
 `templates/` 提供运行时 helper，`references/` 提供按需读取的模板和接口说明。
@@ -20,15 +20,22 @@
 所有浏览器类任务默认先解析 browser provider，再接管 provider 返回的调试地址。
 普通远程调试端口也被建模为 runtime-managed `cdp-port` provider，而不是散落在脚本里的特殊逻辑。
 
+### Workflow-first
+
+这里的 workflow 指围绕某个站点和意图可重复执行的路径：入口页面、前置状态、关键步骤、
+状态验证、输出契约和可复用脚本。截图、抓取、登录、表单、上传、下载、新标签页等是执行原语；
+它们可以组成 workflow，但不是项目沉淀的唯一组织方式。
+
 ### Provider 可扩展
 
 `dp` 核心只提供 provider contract 和 loader，不内置 AdsPower、指纹浏览器或具体 launcher 的私有 API。
 自定义 provider 放在目标工作区的 `.dp/providers/<name>.py`，由客户端或用户维护。
 
-### 复用优先
+### 复用与探索优先
 
 站点脚本会沉淀到 `.dp/projects/<site>/scripts/`。后续同站点、同意图或相近路径的任务优先复用已有脚本，
-这样可以保留登录流程、稳定选择器、历史修复和站点经验。
+这样可以保留登录流程、稳定选择器、历史修复和站点经验。当站点没有稳定 workflow、已有脚本匹配低置信度、
+或需要判断页面结构时，先做 workflow discovery，再决定是否沉淀脚本。
 
 ### 原生交互优先
 
@@ -38,6 +45,18 @@ JS 点击、直接改 `value`、手动派发事件只作为最后兜底。
 ---
 
 ## 能做什么
+
+核心能力：
+
+| 能力 | 说明 |
+|------|------|
+| 站点 workflow 复用 | 通过 `site + intent`、入口状态、URL 和输出契约查找已有脚本，优先复用或修复 |
+| Workflow discovery | 对未知站点或低置信度流程做页面结构、候选选择器、状态验证和输出契约探索 |
+| Provider-first 接管 | 通过工作区 provider 获取 Chromium 调试地址，复用真实浏览器、登录态和 profile |
+| 运行归档 | 每次执行只使用一个 run-dir，输出语义文件，保留可追溯结果 |
+| Action templates | 提供截图、抓取、登录、表单、上传、下载、新标签页、WebPage 和 SessionPage 执行模板 |
+
+常用执行原语：
 
 | 任务类型 | 示例 |
 |----------|------|
@@ -137,9 +156,21 @@ Agent 使用 `dp` 时通常会：
 2. 解析默认 provider，并通过 provider 获取调试地址
 3. 判断使用 `ChromiumPage`、`WebPage` 还是 `SessionPage`
 4. 查找已沉淀脚本，优先复用或修复
-5. 必要时生成临时脚本并执行
+5. 对低置信度或未知站点 workflow 先做 discovery，再生成或沉淀脚本
 6. 将输出保存到 `.dp/projects/<site>/output/<script-name>/<timestamp>/`
 7. 对值得复用的流程沉淀脚本，并维护站点 README 的托管区
+
+---
+
+## Workflow Discovery
+
+Workflow discovery 是在没有稳定站点 workflow 时使用的探索流程，位于截图、抓取、登录等动作模板之上。
+它帮助 Agent 快速理解一个站点：当前入口状态是什么、页面有哪些关键区域和控件、哪些选择器稳定、
+交互后如何判断成功、输出应该是什么，以及是否已经达到可沉淀脚本的条件。
+
+Discovery 的临时探测脚本写入 `.dp/tmp/`；证据和 `workflow-draft.md` 默认写入同一次
+`.dp/projects/<site>/output/workflow-discovery-<intent>/<timestamp>/` run-dir。只有当流程完成验证、
+脚本可重复执行并能回写 `status: ok` 时，才进入 `.dp/projects/<site>/scripts/` 和站点 README 托管区。
 
 ---
 
@@ -169,7 +200,9 @@ Agent 使用 `dp` 时通常会：
 ├── lib/                        # 运行时库副本，由 doctor 管理
 ├── providers/                  # 工作区 provider 实现
 ├── tmp/
-│   ├── _run.py                 # 当次执行的临时脚本
+│   ├── _run.py                 # 可覆盖的一次性临时脚本
+│   ├── _workflow_discovery_<site>_<intent>.py
+│   │                           # 多轮探索时使用语义化临时脚本名
 │   └── _out/                   # 临时输出
 ├── projects/
 │   └── <site-name>/
